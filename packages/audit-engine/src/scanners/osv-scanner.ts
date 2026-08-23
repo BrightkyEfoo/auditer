@@ -76,23 +76,27 @@ export class OsvScannerAdapter implements ScannerAdapter {
   }
 
   buildSpec(_ctx: ScanContext): SandboxSpec {
+    // The offline OSV DB is a host directory (refreshed out-of-band) mounted
+    // read-only; OSV_DB_HOST_PATH tells the worker where it lives on the host.
+    const dbHostPath = process.env.OSV_DB_HOST_PATH;
+    const mounts = [{ source: "", target: CONTAINER_REPO_PATH, readOnly: true }];
+    if (dbHostPath) {
+      mounts.push({ source: dbHostPath, target: "/opt/osv-db", readOnly: true });
+    }
     return {
       image: this.image,
       cmd: [
+        "scan",
+        "--experimental-offline", // no network; match against the mounted DB
+        "--experimental-offline-vulnerabilities",
+        "--experimental-local-db-path=/opt/osv-db",
         "--format=json",
-        "--offline", // no network; use the mounted OSV DB
         "--recursive",
         CONTAINER_REPO_PATH,
       ],
       workdir: CONTAINER_REPO_PATH,
-      env: {
-        // osv-scanner reads the offline DB from this dir (mounted by worker).
-        OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY: "/opt/osv-db",
-      },
-      mounts: [
-        { source: "", target: CONTAINER_REPO_PATH, readOnly: true },
-        // worker also mounts /opt/osv-db read-only (offline vuln DB)
-      ],
+      env: { OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY: "/opt/osv-db" },
+      mounts,
       network: { mode: "none" },
       isolationTier: this.isolationTier,
       ...DEFAULT_HARDENING,

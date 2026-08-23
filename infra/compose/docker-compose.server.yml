@@ -122,6 +122,9 @@ services:
       SANDBOX_RUNTIME: "${SANDBOX_RUNTIME:-runsc}"
       EGRESS_PROXY_URL: http://egress-proxy:3128
       WORKSPACE_ROOT: "${WS_DIR:-/home/brightky/auditer-workspaces}"
+      # Host dir holding the offline OSV database (mounted read-only into SCA
+      # scanner containers; refreshed out-of-band).
+      OSV_DB_HOST_PATH: "${OSV_DB_DIR:-/home/brightky/auditer-osv-db}"
       WORKER_CONCURRENCY: "2"
     volumes:
       # SAME absolute path in and out, so host-spawned scanner containers can
