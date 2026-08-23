@@ -118,7 +118,8 @@ services:
     environment:
       <<: *appenv
       DOCKER_HOST: tcp://docker-socket-proxy:2375
-      SANDBOX_RUNTIME: runc
+      # gVisor is installed on the host now; scanner containers run under runsc.
+      SANDBOX_RUNTIME: "${SANDBOX_RUNTIME:-runsc}"
       EGRESS_PROXY_URL: http://egress-proxy:3128
       WORKSPACE_ROOT: "${WS_DIR:-/home/brightky/auditer-workspaces}"
       WORKER_CONCURRENCY: "2"
