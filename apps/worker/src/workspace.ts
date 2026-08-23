@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, rm, readdir } from "node:fs/promises";
+import { mkdtemp, rm, readdir, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -59,11 +59,27 @@ function authUrl(cloneUrl: string, token?: string): string {
 }
 
 export async function prepare(opts: PrepareOpts): Promise<Workspace> {
-  const dir = await mkdtemp(join(tmpdir(), "auditer-ws-"));
+  // WORKSPACE_ROOT is the "same path in and out" dir for the DinD-sibling
+  // pattern: bind-mounted at the identical host path into the worker, so the
+  // absolute workspace path is valid both here and for scanner containers the
+  // host Docker spawns. Defaults to the OS tmp dir (single-host dev).
+  const root = process.env.WORKSPACE_ROOT ?? tmpdir();
+  await mkdir(root, { recursive: true });
+  const dir = await mkdtemp(join(root, "auditer-ws-"));
   const url = authUrl(opts.cloneUrl, opts.token);
+  const isLocal = opts.cloneUrl.startsWith("/") || opts.cloneUrl.startsWith("file://");
+
+  // git refuses to operate on a repo owned by another uid ("dubious ownership")
+  // and IGNORES safe.directory from -c/env for security — it must come from a
+  // config FILE. Write a throwaway global config and point git at it.
+  const gitconfig = join(dir, "..", `.gitconfig-${Date.now()}`);
+  await writeFile(gitconfig, "[safe]\n\tdirectory = *\n");
 
   const args = ["clone"];
-  if (opts.fullHistory) {
+  if (isLocal) {
+    // Local mirror/demo: plain clone (cheap, all refs). --filter/--depth need
+    // file:// + server-side config, so we skip them for local sources.
+  } else if (opts.fullHistory) {
     // secrets need history + all refs, but no blobs we don't touch.
     args.push("--filter=blob:none", "--no-single-branch");
   } else {
@@ -79,8 +95,16 @@ export async function prepare(opts: PrepareOpts): Promise<Workspace> {
       ...process.env,
       GIT_TERMINAL_PROMPT: "0", // never hang on an auth prompt
       GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: gitconfig, // honors safe.directory=* from this file
     },
   });
+  await rm(gitconfig, { force: true }).catch(() => {});
+
+  // Match the sandbox uid so non-root scanner containers see matching ownership
+  // on the cloned repo (avoids git's dubious-ownership guard). Worker is root,
+  // so this succeeds; root can still clean it up afterwards.
+  const uid = process.env.SANDBOX_UID ?? "65534:65534";
+  await exec("chown", ["-R", uid, dir]).catch(() => {});
 
   const manifests = await detectManifests(dir);
 

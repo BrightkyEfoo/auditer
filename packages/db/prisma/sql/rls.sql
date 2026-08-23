@@ -36,11 +36,13 @@ $$;
 DO $$
 DECLARE
   t text;
+  -- Only tables that carry organizationId directly. pillar_results is scoped
+  -- transitively via audit_runs (RLS'd); ai_usage_ledger is nullable ops data
+  -- written outside a tenant context — both intentionally excluded.
   tenant_tables text[] := ARRAY[
     'organizations','memberships','invitations','connections','repositories',
-    'targets','audit_runs','scans','pillar_results','findings','triage_states',
-    'reports','branding_profiles','artifacts','activity_logs','abuse_events',
-    'ai_usage_ledger'
+    'targets','audit_runs','scans','findings','triage_states',
+    'reports','branding_profiles','artifacts','activity_logs','abuse_events'
   ];
   org_col text;
 BEGIN
@@ -48,11 +50,13 @@ BEGIN
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
     EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
 
-    -- organizations keys on id; everything else on organization_id.
+    -- organizations keys on id; everything else on organizationId. Prisma keeps
+    -- camelCase column names (only table names are @@map'd to snake_case), and
+    -- %I below quotes the identifier correctly.
     IF t = 'organizations' THEN
       org_col := 'id';
     ELSE
-      org_col := 'organization_id';
+      org_col := 'organizationId';
     END IF;
 
     EXECUTE format('DROP POLICY IF EXISTS tenant_isolation ON %I', t);

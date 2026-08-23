@@ -20,9 +20,16 @@ export class QueueService implements OnModuleDestroy {
     },
   });
 
-  async enqueueAudit(job: AuditJob): Promise<string> {
-    const added = await this.auditQueue.add("audit", job, { jobId: job.auditRunId });
-    return added.id ?? job.auditRunId;
+  /**
+   * Enqueue an audit or a report-render job. `jobId` defaults to the runId so a
+   * duplicate audit trigger is idempotent — but a report re-render of an already
+   * completed run must pass a distinct jobId (else BullMQ dedupes it against the
+   * finished audit job and it never runs).
+   */
+  async enqueueAudit(job: AuditJob, jobId?: string): Promise<string> {
+    const id = jobId ?? job.auditRunId;
+    const added = await this.auditQueue.add("audit", job, { jobId: id });
+    return added.id ?? id;
   }
 
   async onModuleDestroy(): Promise<void> {

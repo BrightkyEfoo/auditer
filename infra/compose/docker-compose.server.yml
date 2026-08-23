@@ -1,0 +1,144 @@
+# Server deploy (transit-srv / Coolify host) — self-contained project.
+#
+# One app image (infra/docker/app.Dockerfile), run as api / worker / web.
+# Infra ports are INTERNAL only (no host publish) to avoid colliding with the
+# host's existing services; only web (3300) and api (3301) are exposed.
+#
+# Sandbox runs under runc here (gVisor needs a Docker daemon restart = would
+# bounce the host's other containers; not done). Scanners are still hardened
+# (cap-drop, read-only, no-network, ephemeral) — weaker isolation than gVisor,
+# acceptable for scanning trusted demo repos.
+#
+# WORKSPACE_ROOT is bind-mounted at the SAME absolute path into the worker so
+# scanner containers the host spawns can bind-mount the cloned repo.
+#
+# Usage:
+#   export WS_DIR=/home/brightky/auditer-workspaces
+#   docker compose -p auditer -f infra/compose/docker-compose.server.yml up -d --build
+
+name: auditer
+
+x-app-image: &app-image
+  build:
+    context: ../..
+    dockerfile: infra/docker/app.Dockerfile
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: auditer
+      POSTGRES_PASSWORD: auditer
+      POSTGRES_DB: auditer
+    volumes: ["pg:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auditer"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    command: ["valkey-server", "--appendonly", "yes"]
+    volumes: ["valkey:/data"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes: ["minio:/data"]
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on: [minio]
+    entrypoint: >
+      /bin/sh -c "sleep 5;
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb --ignore-existing local/auditer && echo bucket-ready"
+
+  openbao:
+    image: openbao/openbao:latest
+    cap_add: ["IPC_LOCK"]
+    environment:
+      BAO_DEV_ROOT_TOKEN_ID: dev-root-token
+      BAO_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+    command: ["server", "-dev"]
+
+  egress-proxy:
+    image: ubuntu/squid:latest
+    volumes: ["./squid/squid.conf:/etc/squid/squid.conf:ro"]
+
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      POST: 1
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock:ro"]
+    restart: unless-stopped
+
+  api:
+    <<: *app-image
+    command: ["node", "apps/api/dist/main.js"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      valkey: { condition: service_healthy }
+    environment: &appenv
+      NODE_ENV: production
+      DATABASE_URL: postgresql://auditer:auditer@postgres:5432/auditer
+      DATABASE_APP_URL: postgresql://auditer_app:auditer_app@postgres:5432/auditer
+      REDIS_URL: redis://valkey:6379
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: auditer
+      OPENBAO_ADDR: http://openbao:8200
+      OPENBAO_TOKEN: dev-root-token
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      API_PORT: "3001"
+      API_URL: http://api:3001
+      WEB_URL: "${WEB_URL:-http://localhost:3300}"
+      AUTH_DEV_HEADERS: "1"
+    ports: ["127.0.0.1:3301:3001"]
+
+  worker:
+    <<: *app-image
+    command: ["node", "apps/worker/dist/main.js"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      valkey: { condition: service_healthy }
+      docker-socket-proxy: { condition: service_started }
+    environment:
+      <<: *appenv
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
+      SANDBOX_RUNTIME: runc
+      EGRESS_PROXY_URL: http://egress-proxy:3128
+      WORKSPACE_ROOT: "${WS_DIR:-/home/brightky/auditer-workspaces}"
+      WORKER_CONCURRENCY: "2"
+    volumes:
+      # SAME absolute path in and out, so host-spawned scanner containers can
+      # bind-mount the cloned repo.
+      - "${WS_DIR:-/home/brightky/auditer-workspaces}:${WS_DIR:-/home/brightky/auditer-workspaces}"
+
+  web:
+    <<: *app-image
+    command: ["node_modules/.bin/next", "start", "-p", "3000"]
+    working_dir: /app/apps/web
+    depends_on: [api]
+    environment:
+      NODE_ENV: production
+      API_URL: http://api:3001
+      WEB_URL: "${WEB_URL:-http://localhost:3300}"
+    ports: ["127.0.0.1:3300:3000"]
+
+volumes:
+  pg:
+  valkey:
+  minio:

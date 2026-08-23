@@ -67,7 +67,11 @@ async function resolveClone(
     const repo = await tx.repository.findFirstOrThrow({ where: { id: repositoryId } });
     const conn = await tx.connection.findFirstOrThrow({ where: { id: repo.connectionId } });
     const host = repo.provider === "github" ? "github.com" : "gitlab.com";
-    const cloneUrl = `https://${host}/${repo.fullName}.git`;
+    // A local path / file:// fullName clones directly (used for on-host demo
+    // repos and air-gapped mirrors); anything else is a provider https URL.
+    const isLocal = repo.fullName.startsWith("/") || repo.fullName.startsWith("file://");
+    const cloneUrl = isLocal ? repo.fullName : `https://${host}/${repo.fullName}.git`;
+    if (isLocal) return { cloneUrl, token: undefined, ref: undefined };
 
     // Prefer a fresh, short-lived GitHub App installation token (never persisted);
     // fall back to a stored PAT (envelope-decrypted); else clone unauthenticated.

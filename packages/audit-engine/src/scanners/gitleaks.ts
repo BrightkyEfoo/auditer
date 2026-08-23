@@ -1,11 +1,7 @@
 import type { ExitClass, RawFinding, Severity } from "@auditer/types";
 import type { ScannerAdapter, ScanContext } from "../ports/adapter.js";
 import type { SandboxSpec, SandboxResult } from "../ports/sandbox.js";
-import {
-  DEFAULT_HARDENING,
-  CONTAINER_REPO_PATH,
-  CONTAINER_SCRATCH_PATH,
-} from "../ports/sandbox.js";
+import { DEFAULT_HARDENING, CONTAINER_REPO_PATH } from "../ports/sandbox.js";
 import { withFingerprints } from "../normalize/fingerprint.js";
 
 /**
@@ -34,7 +30,9 @@ interface GitleaksFinding {
   Tags?: string[];
 }
 
-const REPORT_PATH = `${CONTAINER_SCRATCH_PATH}/gitleaks.json`;
+// Write the JSON report to stdout (the runner captures stdout, not files);
+// gitleaks' own progress logs go to stderr, so stdout stays clean JSON.
+const REPORT_PATH = "/dev/stdout";
 
 export class GitleaksAdapter implements ScannerAdapter {
   readonly id = "gitleaks";
@@ -53,14 +51,17 @@ export class GitleaksAdapter implements ScannerAdapter {
   buildSpec(_ctx: ScanContext): SandboxSpec {
     return {
       image: this.image,
-      // `git` mode walks full history; report to scratch (repo is read-only).
+      // `git` mode walks full history; JSON report streamed to stdout. The
+      // worker chowns the cloned workspace to this container's uid, so git sees
+      // matching ownership and doesn't trip the "dubious ownership" guard.
       cmd: [
         "git",
-        `--source=${CONTAINER_REPO_PATH}`,
-        `--report-format=json`,
+        CONTAINER_REPO_PATH,
+        "--report-format=json",
         `--report-path=${REPORT_PATH}`,
         "--exit-code=2", // 2 = leaks found; 0 = clean; 1 = error (see classifyExit)
         "--redact",
+        "--no-banner",
       ],
       workdir: CONTAINER_REPO_PATH,
       mounts: [

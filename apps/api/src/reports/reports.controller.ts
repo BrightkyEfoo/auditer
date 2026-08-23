@@ -52,13 +52,17 @@ export class ReportsController {
       });
     });
 
-    // Re-run the aggregate pipeline in report-only mode to render the artifact.
-    await this.queue.enqueueAudit({
-      auditRunId: runId,
-      organizationId: auth.organizationId,
-      pillars: [],
-      scopeConfig: { reportOnly: true, reportId: report.id, format: body.format },
-    });
+    // Report-render job — distinct jobId so BullMQ doesn't dedupe it against the
+    // already-completed audit job for this run.
+    await this.queue.enqueueAudit(
+      {
+        auditRunId: runId,
+        organizationId: auth.organizationId,
+        pillars: [],
+        scopeConfig: { reportOnly: true, reportId: report.id, format: body.format },
+      },
+      `report-${report.id}`,
+    );
 
     return { reportId: report.id };
   }
