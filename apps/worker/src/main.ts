@@ -17,6 +17,7 @@ import { getStorage } from "@auditer/storage";
 import { EventPublisher } from "./events.js";
 import { prepare, type Workspace } from "./workspace.js";
 import { mintInstallationToken } from "./github-app.js";
+import { validGitlabToken } from "./gitlab.js";
 import { buildReportHtml } from "./report-html.js";
 
 /**
@@ -62,32 +63,37 @@ async function isCanceled(auditRunId: string): Promise<boolean> {
 async function resolveClone(
   organizationId: string,
   repositoryId: string,
-): Promise<{ cloneUrl: string; token?: string; ref?: string }> {
-  return withTenant(prisma, organizationId, async (tx) => {
+): Promise<{ cloneUrl: string; token?: string; tokenUser?: string; ref?: string }> {
+  const gitlabHost = (process.env.GITLAB_URL ?? "https://gitlab.com").replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  const connResolved = await withTenant(prisma, organizationId, async (tx) => {
     const repo = await tx.repository.findFirstOrThrow({ where: { id: repositoryId } });
     const conn = await tx.connection.findFirstOrThrow({ where: { id: repo.connectionId } });
-    const host = repo.provider === "github" ? "github.com" : "gitlab.com";
-    // A local path / file:// fullName clones directly (used for on-host demo
-    // repos and air-gapped mirrors); anything else is a provider https URL.
-    const isLocal = repo.fullName.startsWith("/") || repo.fullName.startsWith("file://");
-    const cloneUrl = isLocal ? repo.fullName : `https://${host}/${repo.fullName}.git`;
-    if (isLocal) return { cloneUrl, token: undefined, ref: undefined };
-
-    // Prefer a fresh, short-lived GitHub App installation token (never persisted);
-    // fall back to a stored PAT (envelope-decrypted); else clone unauthenticated.
-    let token: string | undefined;
-    if (repo.provider === "github") {
-      token = await mintInstallationToken(conn.installationId);
-    }
-    if (!token && conn.encPat) {
-      try {
-        token = await openSecret(kek, conn.encPat);
-      } catch {
-        /* fall through to unauthenticated */
-      }
-    }
-    return { cloneUrl, token, ref: repo.defaultBranch };
+    return { repo, conn };
   });
+  const { repo, conn } = connResolved;
+
+  const host = repo.provider === "github" ? "github.com" : gitlabHost;
+  // A local path / file:// fullName clones directly (demo/air-gapped mirrors).
+  const isLocal = repo.fullName.startsWith("/") || repo.fullName.startsWith("file://");
+  const cloneUrl = isLocal ? repo.fullName : `https://${host}/${repo.fullName}.git`;
+  if (isLocal) return { cloneUrl };
+
+  if (repo.provider === "gitlab") {
+    // GitLab OAuth: a fresh access token (refreshed + persisted), user "oauth2".
+    const token = await validGitlabToken(prisma, kek, organizationId, conn);
+    return { cloneUrl, token, tokenUser: "oauth2", ref: repo.defaultBranch };
+  }
+
+  // GitHub: prefer a fresh installation token (never persisted); else a PAT.
+  let token = await mintInstallationToken(conn.installationId);
+  if (!token && conn.encPat) {
+    try {
+      token = await openSecret(kek, conn.encPat);
+    } catch {
+      /* unauthenticated */
+    }
+  }
+  return { cloneUrl, token, tokenUser: "x-access-token", ref: repo.defaultBranch };
 }
 
 /** Resolve a DAST/UX target and HARD-ENFORCE ownership verification. */
@@ -127,8 +133,8 @@ async function processAudit(job: AuditJob): Promise<void> {
       await setStatus(auditRunId, organizationId, "cloning");
       await publisher.status(auditRunId, "cloning");
       const secretsRequested = job.pillars.includes("secrets");
-      const { cloneUrl, token, ref } = await resolveClone(organizationId, job.repositoryId);
-      ws = await prepare({ cloneUrl, ref: job.ref ?? ref, token, fullHistory: secretsRequested });
+      const { cloneUrl, token, tokenUser, ref } = await resolveClone(organizationId, job.repositoryId);
+      ws = await prepare({ cloneUrl, ref: job.ref ?? ref, token, tokenUser, fullHistory: secretsRequested });
       await publisher.log(auditRunId, `cloned ${cloneUrl} (${ws.manifests.length} manifests)`);
       ctx = { auditRunId, organizationId, workspacePath: ws.path, manifests: ws.manifests };
     } else if (job.targetId) {

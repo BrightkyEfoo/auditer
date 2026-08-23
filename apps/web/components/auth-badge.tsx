@@ -30,11 +30,19 @@ export function AuthBadge() {
   }
 
   return (
-    <a
-      href="/api/auth/github"
-      className="rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white dark:bg-white dark:text-black"
-    >
-      Sign in with GitHub
-    </a>
+    <div className="flex items-center gap-2">
+      <a
+        href="/api/auth/github"
+        className="rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white dark:bg-white dark:text-black"
+      >
+        Sign in with GitHub
+      </a>
+      <a
+        href="/api/auth/gitlab"
+        className="rounded-md border border-neutral-300 px-3 py-1.5 text-xs font-medium"
+      >
+        GitLab
+      </a>
+    </div>
   );
 }

@@ -15,12 +15,24 @@ import { z } from "zod";
 import { AuthGuard, Auth, type AuthContext } from "../auth/auth.guard.js";
 import { PrismaService } from "../infra/prisma.service.js";
 import { ZodBody } from "../common/zod.pipe.js";
+import { kekFromEnv, seal, open as openSecret } from "@auditer/crypto";
 import {
   installUrl,
   verifyState,
   listInstallationRepos,
   installationAccount,
 } from "./github.js";
+import {
+  authorizeUrl as gitlabAuthorizeUrl,
+  exchangeCode as gitlabExchange,
+  refreshTokens as gitlabRefresh,
+  fetchUser as gitlabFetchUser,
+  listProjects as gitlabListProjects,
+  signState as gitlabSignState,
+  verifyState as gitlabVerifyState,
+} from "./gitlab.js";
+
+const kek = kekFromEnv();
 
 const ImportBody = z.object({
   externalRepoId: z.string(),
@@ -104,15 +116,99 @@ export class ConnectionsController {
     res.redirect(`${web}/?connect=ok`);
   }
 
-  /** List repos accessible to this installation (what the user selected). */
+  // ── GitLab OAuth (access + rotating refresh tokens, stored encrypted) ──────
+
+  @Get("gitlab/connect")
+  @UseGuards(AuthGuard)
+  connectGitlab(@Auth() auth: AuthContext, @Res() res: Response): void {
+    res.redirect(gitlabAuthorizeUrl("connect", gitlabSignState(auth.organizationId)));
+  }
+
+  @Get("gitlab/callback")
+  async gitlabCallback(
+    @Query("code") code: string,
+    @Query("state") state: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    const web = process.env.WEB_URL ?? "http://localhost:3000";
+    const organizationId = state ? gitlabVerifyState(state) : null;
+    if (!organizationId || !code) {
+      res.redirect(`${web}/?connect=error`);
+      return;
+    }
+    const tokens = await gitlabExchange(code, "connect");
+    const user = await gitlabFetchUser(tokens.accessToken);
+    await this.prisma.tenant(organizationId, (tx) =>
+      tx.connection.upsert({
+        where: { id: `gl-${user.id}` },
+        create: {
+          id: `gl-${user.id}`,
+          organizationId,
+          provider: "gitlab",
+          kind: "gitlab_oauth",
+          externalAccountId: user.username,
+          encPat: undefined,
+          status: "active",
+        },
+        update: { status: "active", externalAccountId: user.username },
+      }),
+    );
+    // store encrypted tokens (access reused as encPat, refresh as encRefreshToken)
+    await this.persistGitlabTokens(organizationId, `gl-${user.id}`, tokens);
+    res.redirect(`${web}/?connect=ok`);
+  }
+
+  /** List repos for a connection — provider-aware (GitHub App vs GitLab OAuth). */
   @Get(":id/repos")
   @UseGuards(AuthGuard)
   async repos(@Auth() auth: AuthContext, @Param("id") id: string) {
     const conn = await this.prisma.tenant(auth.organizationId, (tx) =>
       tx.connection.findFirst({ where: { id, organizationId: auth.organizationId } }),
     );
-    if (!conn?.installationId) throw new NotFoundException("connection not found");
+    if (!conn) throw new NotFoundException("connection not found");
+
+    if (conn.provider === "gitlab") {
+      const access = await this.validGitlabToken(auth.organizationId, conn);
+      return gitlabListProjects(access);
+    }
+    if (!conn.installationId) throw new NotFoundException("connection not usable");
     return listInstallationRepos(conn.installationId);
+  }
+
+  // Persist (encrypt) GitLab tokens on a connection.
+  private async persistGitlabTokens(
+    organizationId: string,
+    connectionId: string,
+    tokens: { accessToken: string; refreshToken: string; expiresAt: number },
+  ): Promise<void> {
+    const [encAccess, encRefresh] = await Promise.all([
+      seal(kek, tokens.accessToken),
+      seal(kek, tokens.refreshToken),
+    ]);
+    await this.prisma.tenant(organizationId, (tx) =>
+      tx.connection.update({
+        where: { id: connectionId },
+        data: {
+          encPat: encAccess,
+          encRefreshToken: encRefresh,
+          tokenExpiresAt: new Date(tokens.expiresAt),
+        },
+      }),
+    );
+  }
+
+  /** Return a valid GitLab access token, refreshing (and rotating) if expired. */
+  private async validGitlabToken(
+    organizationId: string,
+    conn: { id: string; encPat: string | null; encRefreshToken: string | null; tokenExpiresAt: Date | null },
+  ): Promise<string> {
+    const notExpired = conn.tokenExpiresAt && conn.tokenExpiresAt.getTime() - 60_000 > Date.now();
+    if (notExpired && conn.encPat) return openSecret(kek, conn.encPat);
+    if (!conn.encRefreshToken) throw new NotFoundException("gitlab connection has no token");
+    const refresh = await openSecret(kek, conn.encRefreshToken);
+    const tokens = await gitlabRefresh(refresh);
+    await this.persistGitlabTokens(organizationId, conn.id, tokens);
+    return tokens.accessToken;
   }
 
   /** Import a chosen repo so it can be audited. */

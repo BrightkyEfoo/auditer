@@ -56,6 +56,9 @@ jobs:
           GITHUB_APP_CLIENT_SECRET=${{ secrets.GH_APP_CLIENT_SECRET }}
           GITHUB_APP_WEBHOOK_SECRET=${{ secrets.GH_APP_WEBHOOK_SECRET }}
           GITHUB_APP_PRIVATE_KEY=${{ secrets.GH_APP_PRIVATE_KEY }}
+          GITLAB_URL=${{ vars.GITLAB_URL }}
+          GITLAB_CLIENT_ID=${{ secrets.GITLAB_CLIENT_ID }}
+          GITLAB_CLIENT_SECRET=${{ secrets.GITLAB_CLIENT_SECRET }}
           EOF
 
       - name: Build + up

@@ -12,6 +12,22 @@ import type { Request, Response } from "express";
 import { randomBytes } from "node:crypto";
 import { PrismaService } from "../infra/prisma.service.js";
 import { SessionService, SESSION_COOKIE, readCookie } from "./session.service.js";
+import {
+  authorizeUrl as gitlabAuthorizeUrl,
+  exchangeCode as gitlabExchange,
+  fetchUser as gitlabFetchUser,
+  signState as gitlabSignState,
+  verifyState as gitlabVerifyState,
+} from "../connections/gitlab.js";
+
+interface OAuthProfile {
+  provider: "github" | "gitlab";
+  id: string;
+  login: string;
+  name: string | null;
+  email: string;
+  avatarUrl: string | null;
+}
 
 /**
  * App login via GitHub OAuth (distinct from repo-access GitHub App tokens).
@@ -68,24 +84,64 @@ export class AuthController {
 
     const token = await exchangeCode(code, this.redirectUri());
     const gh = await fetchGithubUser(token);
+    await this.completeLogin(
+      { provider: "github", ...gh },
+      res,
+    );
+  }
 
-    // Upsert user + login identity, ensure a personal org + owner membership.
+  // ── GitLab login (OAuth) ──────────────────────────────────────────────────
+
+  @Get("gitlab")
+  gitlab(@Res() res: Response): void {
+    if (!process.env.GITLAB_CLIENT_ID) throw new UnauthorizedException("GitLab OAuth not configured");
+    // We reuse the org-signed state helper; login carries no org yet, so pass a
+    // constant marker — the callback ensures the user's own org.
+    res.redirect(gitlabAuthorizeUrl("login", gitlabSignState("login")));
+  }
+
+  @Get("gitlab/callback")
+  async gitlabCallback(
+    @Query("code") code: string,
+    @Query("state") state: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    if (!code || !state || gitlabVerifyState(state) !== "login") {
+      throw new UnauthorizedException("invalid oauth state");
+    }
+    const tokens = await gitlabExchange(code, "login");
+    const gl = await gitlabFetchUser(tokens.accessToken);
+    await this.completeLogin(
+      {
+        provider: "gitlab",
+        id: gl.id,
+        login: gl.username,
+        name: gl.name,
+        email: gl.email,
+        avatarUrl: gl.avatarUrl,
+      },
+      res,
+    );
+  }
+
+  /** Shared: upsert user + identity, ensure a personal org, set the session. */
+  private async completeLogin(p: OAuthProfile, res: Response): Promise<void> {
     const { userId, organizationId } = await this.prisma.$transaction(async (tx) => {
       const user = await tx.user.upsert({
-        where: { email: gh.email },
-        update: { name: gh.name, avatarUrl: gh.avatarUrl },
-        create: { email: gh.email, name: gh.name, avatarUrl: gh.avatarUrl },
+        where: { email: p.email },
+        update: { name: p.name, avatarUrl: p.avatarUrl },
+        create: { email: p.email, name: p.name, avatarUrl: p.avatarUrl },
       });
       await tx.authIdentity.upsert({
-        where: { provider_providerAccountId: { provider: "github", providerAccountId: gh.id } },
+        where: { provider_providerAccountId: { provider: p.provider, providerAccountId: p.id } },
         update: {},
-        create: { userId: user.id, provider: "github", providerAccountId: gh.id },
+        create: { userId: user.id, provider: p.provider, providerAccountId: p.id },
       });
       let membership = await tx.membership.findFirst({ where: { userId: user.id } });
       if (!membership) {
-        const slug = `${gh.login}-${randomBytes(3).toString("hex")}`.toLowerCase();
+        const slug = `${p.login}-${randomBytes(3).toString("hex")}`.toLowerCase();
         const org = await tx.organization.create({
-          data: { slug, name: `${gh.name ?? gh.login}'s org`, ownerUserId: user.id },
+          data: { slug, name: `${p.name ?? p.login}'s org`, ownerUserId: user.id },
         });
         membership = await tx.membership.create({
           data: { userId: user.id, organizationId: org.id, role: "owner" },

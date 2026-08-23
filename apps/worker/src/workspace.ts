@@ -20,7 +20,8 @@ const exec = promisify(execFile);
 export interface PrepareOpts {
   cloneUrl: string; // https URL, no credentials
   ref?: string;
-  token?: string; // short-lived installation token (optional for public repos)
+  token?: string; // short-lived token (optional for public repos)
+  tokenUser?: string; // basic-auth username for the token (github: x-access-token, gitlab: oauth2)
   fullHistory: boolean;
 }
 
@@ -49,11 +50,12 @@ const MANIFEST_BASENAMES = new Set([
   "Dockerfile",
 ]);
 
-function authUrl(cloneUrl: string, token?: string): string {
+function authUrl(cloneUrl: string, token?: string, tokenUser?: string): string {
   if (!token) return cloneUrl;
   const u = new URL(cloneUrl);
-  // x-access-token is the GitHub App installation-token username convention.
-  u.username = "x-access-token";
+  // Username depends on the provider: GitHub App → "x-access-token", GitLab
+  // OAuth → "oauth2".
+  u.username = tokenUser ?? "x-access-token";
   u.password = token;
   return u.toString();
 }
@@ -66,7 +68,7 @@ export async function prepare(opts: PrepareOpts): Promise<Workspace> {
   const root = process.env.WORKSPACE_ROOT ?? tmpdir();
   await mkdir(root, { recursive: true });
   const dir = await mkdtemp(join(root, "auditer-ws-"));
-  const url = authUrl(opts.cloneUrl, opts.token);
+  const url = authUrl(opts.cloneUrl, opts.token, opts.tokenUser);
   const isLocal = opts.cloneUrl.startsWith("/") || opts.cloneUrl.startsWith("file://");
 
   // git refuses to operate on a repo owned by another uid ("dubious ownership")

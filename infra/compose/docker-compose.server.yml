@@ -110,6 +110,10 @@ services:
       GITHUB_APP_CLIENT_ID: "${GITHUB_APP_CLIENT_ID:-}"
       GITHUB_APP_CLIENT_SECRET: "${GITHUB_APP_CLIENT_SECRET:-}"
       GITHUB_APP_WEBHOOK_SECRET: "${GITHUB_APP_WEBHOOK_SECRET:-}"
+      # GitLab OAuth (login + repo access). GITLAB_URL for self-managed instances.
+      GITLAB_URL: "${GITLAB_URL:-https://gitlab.com}"
+      GITLAB_CLIENT_ID: "${GITLAB_CLIENT_ID:-}"
+      GITLAB_CLIENT_SECRET: "${GITLAB_CLIENT_SECRET:-}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:-dev-secret-change-me}"
       API_PORT: "3001"
       API_URL: http://api:3001

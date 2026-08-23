@@ -88,12 +88,20 @@ export default function Dashboard() {
       <section className="space-y-3">
         <h2 className="text-sm font-medium">1 · Connect a provider</h2>
         {connections.length === 0 ? (
-          <a
-            href="/api/connections/github/install"
-            className="inline-flex items-center gap-2 rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white dark:bg-white dark:text-black"
-          >
-            Connect GitHub
-          </a>
+          <div className="flex flex-wrap gap-2">
+            <a
+              href="/api/connections/github/install"
+              className="inline-flex items-center gap-2 rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white dark:bg-white dark:text-black"
+            >
+              Connect GitHub
+            </a>
+            <a
+              href="/api/connections/gitlab/connect"
+              className="inline-flex items-center gap-2 rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium"
+            >
+              Connect GitLab
+            </a>
+          </div>
         ) : (
           <div className="space-y-2">
             {connections.map((c) => (
