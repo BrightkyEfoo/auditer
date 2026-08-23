@@ -7,6 +7,14 @@ import { Button, ButtonLink, Field, inputClass, Label } from "@/components/ui";
 
 const MIN_PASSWORD = 12;
 
+/**
+ * Version of the terms shown next to the checkbox. Must match the `version`
+ * field of the documents in lib/legal.ts and the api's CURRENT_TERMS_VERSION —
+ * it is stored with the acceptance, so a mismatch would record consent to a
+ * document the user never saw.
+ */
+const TERMS_VERSION = "1.0";
+
 /** api error codes → wording the user can act on. Never leak which half failed. */
 const MESSAGES: Record<string, string> = {
   email_taken: "Un compte existe déjà avec cette adresse. Connectez-vous plutôt.",
@@ -50,7 +58,17 @@ export function CredentialsForm({ mode }: { mode: "signup" | "login" }) {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(
-          signup ? { email, password, name: name.trim() || undefined } : { email, password },
+          signup
+            ? {
+                email,
+                password,
+                name: name.trim() || undefined,
+                // Asserted to the server, not merely checked in the browser:
+                // the acceptance is recorded server-side with its version.
+                acceptedTerms: accepted,
+                termsVersion: TERMS_VERSION,
+              }
+            : { email, password },
         ),
       });
       if (!res.ok) {

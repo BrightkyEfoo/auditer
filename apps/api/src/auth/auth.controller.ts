@@ -50,6 +50,26 @@ interface OAuthProfile {
  */
 const MIN_PASSWORD_LENGTH = 12;
 
+/**
+ * Version of the terms a new account accepts. Bump this whenever the published
+ * documents change materially: existing rows keep the version they actually
+ * agreed to, which is the whole point of storing it rather than a boolean.
+ * Must match the `version` field of the documents in apps/web/lib/legal.ts.
+ */
+const CURRENT_TERMS_VERSION = "1.0";
+
+/**
+ * Caller address. Express only trusts X-Forwarded-For when `trust proxy` is
+ * set, which it is not here — behind Caddy that would make `req.ip` the proxy
+ * for everyone, collapsing the rate limiter into a single global bucket. So we
+ * read the header ourselves and take the FIRST hop, the one the edge appended.
+ */
+function clientIp(req: Request): string {
+  const fwd = req.header("x-forwarded-for");
+  const first = fwd?.split(",")[0]?.trim();
+  return first || req.ip || req.socket.remoteAddress || "unknown";
+}
+
 const RegisterBody = z.object({
   // Normalize before validating: a pasted address often carries whitespace and
   // mixed case, and the row is keyed on email — "A@b.com " must not become a
@@ -59,6 +79,13 @@ const RegisterBody = z.object({
     .string()
     .min(MIN_PASSWORD_LENGTH, `password must be at least ${MIN_PASSWORD_LENGTH} characters`),
   name: z.string().trim().min(1).optional(),
+  // Consent is a server-side fact or it is nothing. A checkbox validated only
+  // in the browser proves nothing after the fact, so the client must assert it
+  // explicitly and we record WHICH version was accepted, WHEN, and from where.
+  acceptedTerms: z.literal(true, {
+    errorMap: () => ({ message: "the terms of use must be accepted" }),
+  }),
+  termsVersion: z.string().trim().min(1).max(16).default(CURRENT_TERMS_VERSION),
 });
 
 const LoginBody = z.object({
@@ -167,7 +194,18 @@ export class AuthController {
       const user = await tx.user.upsert({
         where: { email: p.email },
         update: { name: p.name, avatarUrl: p.avatarUrl },
-        create: { email: p.email, name: p.name, avatarUrl: p.avatarUrl },
+        create: {
+          email: p.email,
+          name: p.name,
+          avatarUrl: p.avatarUrl,
+          // OAuth sign-up has no checkbox: the provider's consent screen is the
+          // only click. Acceptance is therefore recorded as of first sign-in,
+          // with the terms version in force at that moment — weaker evidence
+          // than an explicit tick, but dated and attributable, which a silent
+          // account creation would not be.
+          termsAcceptedAt: new Date(),
+          termsVersion: CURRENT_TERMS_VERSION,
+        },
       });
       await tx.authIdentity.upsert({
         where: { provider_providerAccountId: { provider: p.provider, providerAccountId: p.id } },
@@ -212,7 +250,17 @@ export class AuthController {
         if (existing) throw new ConflictException({ error: "email_taken" });
 
         const user = await tx.user.create({
-          data: { email: body.email, name: body.name ?? null, passwordHash },
+          data: {
+            email: body.email,
+            name: body.name ?? null,
+            passwordHash,
+            termsAcceptedAt: new Date(),
+            termsVersion: body.termsVersion,
+            // Recorded for the same reason a paper contract records a place:
+            // it is what makes the acceptance attributable later. Kept as the
+            // raw remote address, never used to profile.
+            termsAcceptedIp: clientIp(req),
+          },
         });
         // The login identity, kept separate from repo-access Connections. Keyed
         // on the normalized email so a later OAuth login on the same address
@@ -279,7 +327,7 @@ export class AuthController {
 
   /** 429 once an IP burns its credential budget. See password.ts for the caveats. */
   private throttle(req: Request): void {
-    const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
+    const ip = clientIp(req);
     if (!allowCredentialAttempt(ip)) {
       throw new HttpException({ error: "rate_limited" }, HttpStatus.TOO_MANY_REQUESTS);
     }

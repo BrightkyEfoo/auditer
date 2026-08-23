@@ -132,6 +132,13 @@ model User {
   /// api/src/auth/password.ts). Null for OAuth-only accounts — an account can
   /// have both, and never having one is not an error.
   passwordHash String?
+  /// Proof that this account accepted the published terms: WHEN, WHICH version,
+  /// and from WHERE. A boolean would be worthless the day the documents change,
+  /// and a browser-side checkbox leaves no trace at all. Null only for rows
+  /// created before this was recorded.
+  termsAcceptedAt DateTime?
+  termsVersion    String?
+  termsAcceptedIp String?
   createdAt DateTime @default(now())
 
   identities  AuthIdentity[]

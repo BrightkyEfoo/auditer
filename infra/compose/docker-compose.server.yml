@@ -118,7 +118,10 @@ services:
       API_PORT: "3001"
       API_URL: http://api:3001
       WEB_URL: "${WEB_URL:-http://localhost:3300}"
-      AUTH_DEV_HEADERS: "${AUTH_DEV_HEADERS:-1}"
+      # Dev-only auth bypass. Defaults to OFF: a missing or empty variable in
+      # the CI env file must never open the api. The guard also refuses it
+      # outright when NODE_ENV=production, so this line is the second lock.
+      AUTH_DEV_HEADERS: "${AUTH_DEV_HEADERS:-0}"
     ports: ["127.0.0.1:3301:3001"]
 
   worker:

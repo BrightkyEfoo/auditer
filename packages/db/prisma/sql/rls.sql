@@ -39,6 +39,15 @@ DECLARE
   -- Only tables that carry organizationId directly. pillar_results is scoped
   -- transitively via audit_runs (RLS'd); ai_usage_ledger is nullable ops data
   -- written outside a tenant context — both intentionally excluded.
+  --
+  -- `sessions` is excluded even though it carries organizationId, and that is a
+  -- deliberate ordering constraint, not an oversight: the session row is what
+  -- ESTABLISHES the tenant. Resolving it happens before any org is known, so a
+  -- deny-by-default policy keyed on the GUC would make every login resolve to
+  -- zero rows and lock the product out entirely. The row is reachable only by
+  -- the SHA-256 of a 32-byte random token, and the app never lists sessions —
+  -- lookup is always findUnique on tokenHash. Any future query that filters
+  -- sessions by anything else must scope by userId explicitly.
   tenant_tables text[] := ARRAY[
     'organizations','memberships','invitations','connections','repositories',
     'targets','audit_runs','scans','findings','triage_states',

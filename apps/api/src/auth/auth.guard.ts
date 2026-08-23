@@ -15,8 +15,18 @@ import { SessionService, SESSION_COOKIE, readCookie } from "./session.service.js
  *
  * Primary path: validate the cookie session (SessionService). This single
  * chokepoint is where better-auth would slot in later with no controller change.
- * Dev fallback: `x-user-id` / `x-org-id` headers, allowed only when
- * AUTH_DEV_HEADERS=1 (off in production).
+ *
+ * Dev fallback: `x-user-id` / `x-org-id` headers. This is a COMPLETE auth
+ * bypass — anyone who can reach the api can claim any organization — so it is
+ * gated twice, and the two gates are independent on purpose:
+ *
+ *   1. AUTH_DEV_HEADERS must be exactly "1" (opt-in, never a default), and
+ *   2. NODE_ENV must not be "production".
+ *
+ * The second gate exists because the first one is a string that travels through
+ * a compose file, a CI secret and a shell — three places where it can silently
+ * become empty and fall back to a default. A production deploy that loses the
+ * variable must fail closed, not open.
  */
 export interface AuthContext {
   userId: string;
@@ -24,6 +34,11 @@ export interface AuthContext {
 }
 
 const CUID_RE = /^[a-z0-9]{20,40}$/i;
+
+/** Evaluated per request, not at import time, so tests can flip the env. */
+function devHeadersAllowed(): boolean {
+  return process.env.AUTH_DEV_HEADERS === "1" && process.env.NODE_ENV !== "production";
+}
 
 @Injectable()
 export class AuthGuard implements CanActivate {
@@ -42,8 +57,8 @@ export class AuthGuard implements CanActivate {
       }
     }
 
-    // 2. Dev header fallback — explicitly opt-in only.
-    if (process.env.AUTH_DEV_HEADERS === "1") {
+    // 2. Dev header fallback — opt-in AND non-production only.
+    if (devHeadersAllowed()) {
       const userId = req.header("x-user-id");
       const organizationId = req.header("x-org-id");
       if (userId && organizationId && CUID_RE.test(organizationId)) {
