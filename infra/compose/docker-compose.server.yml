@@ -102,10 +102,19 @@ services:
       OPENBAO_ADDR: http://openbao:8200
       OPENBAO_TOKEN: dev-root-token
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      # GitHub App (SaaS repo access) + OAuth login. Fill these in a server .env
+      # after registering the App; the connect flow needs them.
+      GITHUB_APP_ID: "${GITHUB_APP_ID:-}"
+      GITHUB_APP_SLUG: "${GITHUB_APP_SLUG:-}"
+      GITHUB_APP_PRIVATE_KEY: "${GITHUB_APP_PRIVATE_KEY:-}"
+      GITHUB_APP_CLIENT_ID: "${GITHUB_APP_CLIENT_ID:-}"
+      GITHUB_APP_CLIENT_SECRET: "${GITHUB_APP_CLIENT_SECRET:-}"
+      GITHUB_APP_WEBHOOK_SECRET: "${GITHUB_APP_WEBHOOK_SECRET:-}"
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:-dev-secret-change-me}"
       API_PORT: "3001"
       API_URL: http://api:3001
       WEB_URL: "${WEB_URL:-http://localhost:3300}"
-      AUTH_DEV_HEADERS: "1"
+      AUTH_DEV_HEADERS: "${AUTH_DEV_HEADERS:-1}"
     ports: ["127.0.0.1:3301:3001"]
 
   worker:

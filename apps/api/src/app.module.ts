@@ -9,6 +9,7 @@ import { AuditsService } from "./audits/audits.service.js";
 import { AuditsController } from "./audits/audits.controller.js";
 import { SseController } from "./sse/sse.controller.js";
 import { ReposController } from "./repos/repos.controller.js";
+import { ConnectionsController } from "./connections/connections.controller.js";
 import { ReportsController } from "./reports/reports.controller.js";
 import { TriageController } from "./triage/triage.controller.js";
 import { TargetsController } from "./targets/targets.controller.js";
@@ -21,6 +22,7 @@ import { HealthController } from "./health/health.controller.js";
     AuditsController,
     SseController,
     ReposController,
+    ConnectionsController,
     ReportsController,
     TriageController,
     TargetsController,

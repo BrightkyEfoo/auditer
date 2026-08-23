@@ -71,8 +71,32 @@ export interface Finding {
   aiNeedsHuman: boolean;
 }
 
+export interface Connection {
+  id: string;
+  provider: string;
+  kind: string;
+  externalAccountId: string | null;
+  status: string;
+}
+
+export interface RemoteRepo {
+  externalRepoId: string;
+  fullName: string;
+  defaultBranch: string;
+  visibility: string;
+  primaryLanguage: string | null;
+}
+
 export const api = {
   listRepos: () => req<Repo[]>("/repos"),
+  listConnections: () => req<Connection[]>("/connections"),
+  listConnectionRepos: (connectionId: string) =>
+    req<RemoteRepo[]>(`/connections/${connectionId}/repos`),
+  importConnectionRepo: (connectionId: string, repo: RemoteRepo) =>
+    req<Repo>(`/connections/${connectionId}/import`, {
+      method: "POST",
+      body: JSON.stringify(repo),
+    }),
   createAudit: (body: { repositoryId?: string; targetId?: string; pillars: string[] }) =>
     req<{ runId: string; status: string }>("/audits", {
       method: "POST",
