@@ -62,13 +62,13 @@ jobs:
         run: |
           ssh -p "${{ vars.DEPLOY_PORT || '22' }}" \
             "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
-            "cd ${{ vars.DEPLOY_PATH }} && docker compose -p auditer -f infra/compose/docker-compose.server.yml up -d --build"
+            "cd ${{ vars.DEPLOY_PATH }} && docker compose -p auditer --env-file .env -f infra/compose/docker-compose.server.yml up -d --build"
 
       - name: DB bootstrap (idempotent)
         run: |
           ssh -p "${{ vars.DEPLOY_PORT || '22' }}" \
             "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
-            "cd ${{ vars.DEPLOY_PATH }} && docker compose -p auditer -f infra/compose/docker-compose.server.yml run --rm --no-deps -T -w /app/packages/db api bash -lc '
+            "cd ${{ vars.DEPLOY_PATH }} && docker compose -p auditer --env-file .env -f infra/compose/docker-compose.server.yml run --rm --no-deps -T -w /app/packages/db api bash -lc '
               DB=postgresql://auditer:auditer@postgres:5432/auditer;
               DATABASE_URL=\$DB node_modules/.bin/prisma db push --skip-generate --accept-data-loss;
               psql \$DB -v ON_ERROR_STOP=1 -f prisma/sql/rls.sql'"
