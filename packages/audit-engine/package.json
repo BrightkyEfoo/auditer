@@ -1,0 +1,37 @@
+{
+  "name": "@auditer/audit-engine",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "tsc -b --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@auditer/types": "workspace:*",
+    "@anthropic-ai/sdk": "^0.68.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@auditer/config": "workspace:*",
+    "@types/node": "^22.10.7",
+    "dockerode": "^4.0.2",
+    "@types/dockerode": "^3.3.31",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  },
+  "peerDependencies": {
+    "dockerode": "^4.0.2"
+  }
+}

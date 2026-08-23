@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "display": "Auditer NestJS App",
+  "extends": "./base.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "target": "ES2023",
+    "outDir": "dist",
+    "rootDir": "src",
+    "declaration": false,
+    "declarationMap": false,
+    "strictPropertyInitialization": false
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "**/*.spec.ts"]
+}

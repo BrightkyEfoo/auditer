@@ -1,0 +1,602 @@
+// Auditer — canonical data model.
+// Multi-tenant: every tenant-scoped row carries organizationId, and Postgres
+// RLS (see migrations/*/rls.sql) is the deny-by-default backstop so a missing
+// WHERE in app code cannot leak across organizations.
+//
+// The source code of audited repos is NEVER stored here — only normalized
+// findings + pointers (Artifact.storageKey) into object storage.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+  // Explicit output: generate into the package so pnpm's virtual store can't
+  // shadow it. db-internal code imports from here; consumers use @auditer/db.
+  output          = "../generated/client"
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pgcrypto]
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Enums — kept in lockstep with packages/types/src/enums.ts
+// ─────────────────────────────────────────────────────────────────────────
+
+enum Role {
+  owner
+  admin
+  member
+  viewer
+}
+
+enum Provider {
+  github
+  gitlab
+}
+
+enum ConnectionKind {
+  github_app
+  gitlab_oauth
+  gitlab_pat
+}
+
+enum VerificationStatus {
+  unverified
+  pending
+  verified
+  revoked
+}
+
+enum Pillar {
+  secrets
+  sca
+  sast
+  quality
+  hygiene
+  dast
+  ux
+}
+
+enum Severity {
+  critical
+  high
+  medium
+  low
+  info
+}
+
+enum AuditStatus {
+  queued
+  cloning
+  scanning
+  analyzing
+  reporting
+  done
+  completed_with_errors
+  failed
+  canceled
+}
+
+enum ScanStatus {
+  pending
+  running
+  success
+  partial
+  failed
+  skipped
+}
+
+enum ExitClass {
+  success
+  partial
+  fail
+}
+
+enum IsolationTier {
+  gvisor
+  microvm
+}
+
+enum TriageStatus {
+  open
+  false_positive
+  ignored
+  fixed
+  accepted
+}
+
+enum AuditTrigger {
+  manual
+  webhook
+  schedule
+}
+
+enum ReportFormat {
+  dashboard
+  pdf
+  html
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Identity & tenancy
+// ─────────────────────────────────────────────────────────────────────────
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  avatarUrl String?
+  createdAt DateTime @default(now())
+
+  identities  AuthIdentity[]
+  memberships Membership[]
+  sessions    Session[]
+  ownedOrgs   Organization[] @relation("OrgOwner")
+
+  @@map("users")
+}
+
+/// Cookie session (opaque token hash → user + active org). Login is separate
+/// from repo access; this is the app-login side. Swappable for better-auth at
+/// the AuthGuard chokepoint without touching controllers.
+model Session {
+  id             String   @id @default(cuid())
+  tokenHash      String   @unique
+  userId         String
+  organizationId String
+  expiresAt      DateTime
+  createdAt      DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+/// LOGIN identity — deliberately separate from repo-access Connections.
+model AuthIdentity {
+  id                String   @id @default(cuid())
+  userId            String
+  provider          String // github | gitlab | email
+  providerAccountId String
+  createdAt         DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("auth_identities")
+}
+
+model Organization {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  ownerUserId String
+  createdAt   DateTime @default(now())
+
+  owner       User             @relation("OrgOwner", fields: [ownerUserId], references: [id])
+  memberships Membership[]
+  invitations Invitation[]
+  connections Connection[]
+  repositories Repository[]
+  targets     Target[]
+  auditRuns   AuditRun[]
+  branding    BrandingProfile?
+
+  @@map("organizations")
+}
+
+model Membership {
+  id             String   @id @default(cuid())
+  userId         String
+  organizationId String
+  role           Role     @default(member)
+  status         String   @default("active")
+  createdAt      DateTime @default(now())
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+  @@map("memberships")
+}
+
+model Invitation {
+  id             String    @id @default(cuid())
+  organizationId String
+  email          String
+  role           Role      @default(member)
+  tokenHash      String    @unique
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("invitations")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// VCS access & targets — encrypted tokens (envelope-encrypted via OpenBao)
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Repo-access credential, distinct from login. Tokens stored envelope-encrypted.
+model Connection {
+  id                String         @id @default(cuid())
+  organizationId    String
+  provider          Provider
+  kind              ConnectionKind
+  installationId    String?
+  externalAccountId String?
+  /// AES-256-GCM ciphertext (DEK wrapped by OpenBao KEK). Never plaintext.
+  encRefreshToken   String?
+  encPat            String?
+  tokenExpiresAt    DateTime?
+  scopes            String[]       @default([])
+  status            String         @default("active")
+  createdById       String?
+  createdAt         DateTime       @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  repositories Repository[]
+
+  @@index([organizationId])
+  @@map("connections")
+}
+
+model Repository {
+  id              String   @id @default(cuid())
+  organizationId  String
+  connectionId    String
+  provider        Provider
+  externalRepoId  String
+  fullName        String
+  defaultBranch   String   @default("main")
+  visibility      String   @default("private")
+  sizeKb          Int?
+  primaryLanguage String?
+  webhookExternalId String?
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  connection   Connection   @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  auditRuns    AuditRun[]
+  targets      Target[]
+  baselines    Baseline[]
+
+  @@unique([connectionId, externalRepoId])
+  @@index([organizationId])
+  @@map("repositories")
+}
+
+/// DAST target. Ownership MUST be verified before any active scan — enforced
+/// here (verificationStatus), not merely in the UI.
+model Target {
+  id                 String             @id @default(cuid())
+  organizationId     String
+  repositoryId       String?
+  kind               String // domain | origin | api
+  value              String
+  apexDomain         String?
+  verificationMethod String?
+  verificationStatus VerificationStatus @default(unverified)
+  verificationToken  String?
+  resolvedIps        String[]           @default([])
+  scopeAllowlist     Json?
+  /// Envelope-encrypted auth config for authenticated DAST scans.
+  encAuthConfig      String?
+  createdById        String?
+  createdAt          DateTime           @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  repository   Repository?  @relation(fields: [repositoryId], references: [id], onDelete: SetNull)
+  auditRuns    AuditRun[]
+
+  @@index([organizationId])
+  @@map("targets")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Audit pipeline: AuditRun → Scan → Finding
+// ─────────────────────────────────────────────────────────────────────────
+
+model AuditRun {
+  id             String       @id @default(cuid())
+  organizationId String
+  repositoryId   String?
+  targetId       String?
+  trigger        AuditTrigger @default(manual)
+  commitSha      String?
+  ref            String?
+  pillars        Pillar[]     @default([])
+  scopeConfig    Json?
+  status         AuditStatus  @default(queued)
+  scoringVersion String?
+  riskScore      Int?
+  createdById    String?
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  createdAt      DateTime     @default(now())
+
+  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  repository    Repository?    @relation(fields: [repositoryId], references: [id], onDelete: SetNull)
+  target        Target?        @relation(fields: [targetId], references: [id], onDelete: SetNull)
+  scans         Scan[]
+  findings      Finding[]
+  pillarResults PillarResult[]
+  reports       Report[]
+  artifacts     Artifact[]
+
+  @@index([organizationId, status])
+  @@index([repositoryId])
+  @@map("audit_runs")
+}
+
+model Scan {
+  id           String        @id @default(cuid())
+  organizationId String
+  auditRunId   String
+  /// Stable scanner identifier (adapter id), part of the idempotency key.
+  scannerId    String
+  pillar       Pillar
+  tool         String
+  toolVersion  String?
+  imageDigest  String?
+  isolationTier IsolationTier @default(gvisor)
+  status       ScanStatus    @default(pending)
+  exitCode     Int?
+  exitClass    ExitClass?
+  stats        Json?
+  rawArtifactId String?
+  error        Json?
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  createdAt    DateTime      @default(now())
+
+  auditRun AuditRun  @relation(fields: [auditRunId], references: [id], onDelete: Cascade)
+  findings Finding[]
+
+  /// Idempotency: one scan row per (run, scanner) — safe re-enqueue/upsert.
+  @@unique([auditRunId, scannerId])
+  @@index([organizationId])
+  @@map("scans")
+}
+
+model PillarResult {
+  id         String   @id @default(cuid())
+  auditRunId String
+  pillar     Pillar
+  score      Int
+  grade      String
+  counts     Json
+  partial    Boolean  @default(false)
+
+  auditRun AuditRun @relation(fields: [auditRunId], references: [id], onDelete: Cascade)
+
+  @@unique([auditRunId, pillar])
+  @@map("pillar_results")
+}
+
+model Finding {
+  id             String   @id @default(cuid())
+  organizationId String
+  auditRunId     String
+  scanId         String
+  pillar         Pillar
+  tool           String
+  ruleId         String
+  severity       Severity
+  cvssScore      Float?
+  cvssVector     String?
+  confidence     Float?
+
+  title       String
+  description  String   @default("")
+  cwe         String[] @default([])
+  vulnIds     String[] @default([]) // CVE / GHSA / OSV
+  owaspCategory String?
+
+  location Json? // CodeLocation
+  target   Json? // WebLocation (DAST)
+  package  Json? // PackageRef (SCA)
+  vuln     Json? // VulnEnrichment (EPSS/KEV)
+
+  evidence   String? // redacted
+  references String[] @default([])
+
+  /// Cross-run identity key. Triage is keyed on this, not on id.
+  fingerprint   String
+  dedupeGroupId String?
+  sourceCount   Int    @default(1)
+
+  /// Denormalized snapshot of the fingerprint's triage decision (canonical
+  /// store is TriageState). Set at persist time from the loaded triage map and
+  /// kept in sync by the triage endpoint — makes findings reads a single query.
+  triageStatus  TriageStatus @default(open)
+
+  // AI enrichment (advisory; never the source of a finding)
+  aiExplanation    String?
+  aiRemediation    String?
+  aiSuggestedFix   String?
+  aiPriority       Int?
+  aiConfidence     Float?
+  aiNeedsHuman     Boolean @default(false)
+  aiModel          String?
+
+  firstSeenRunId String?
+  lastSeenRunId  String?
+  rawRef         String?
+  extras         Json?
+  createdAt      DateTime @default(now())
+
+  auditRun AuditRun @relation(fields: [auditRunId], references: [id], onDelete: Cascade)
+  scan     Scan     @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([auditRunId, severity])
+  @@index([fingerprint])
+  @@map("findings")
+}
+
+/// Triage decision keyed on fingerprint → persists across runs, survives
+/// refactors, and is org-scoped (not run-scoped).
+model TriageState {
+  id             String       @id @default(cuid())
+  organizationId String
+  fingerprint    String
+  status         TriageStatus @default(open)
+  reason         String?
+  suppressedUntil DateTime?
+  assigneeId     String?
+  updatedById    String?
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([organizationId, fingerprint])
+  @@index([organizationId])
+  @@map("triage_states")
+}
+
+/// Snapshot of a branch's fingerprints from the last completed run (diff mode).
+model Baseline {
+  id           String   @id @default(cuid())
+  repositoryId String
+  branch       String
+  fingerprints String[] @default([])
+  updatedAt    DateTime @updatedAt
+
+  repository Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@unique([repositoryId, branch])
+  @@map("baselines")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Reporting & artifacts
+// ─────────────────────────────────────────────────────────────────────────
+
+model Report {
+  id             String       @id @default(cuid())
+  organizationId String
+  auditRunId     String
+  format         ReportFormat @default(dashboard)
+  aiModel        String?
+  summary        Json?
+  pdfArtifactId  String?
+  brandingProfileId String?
+  shareTokenHash String?
+  status         String       @default("draft")
+  generatedAt    DateTime?
+  createdAt      DateTime     @default(now())
+
+  auditRun AuditRun @relation(fields: [auditRunId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("reports")
+}
+
+model BrandingProfile {
+  id             String  @id @default(cuid())
+  organizationId String  @unique
+  companyName    String?
+  logoAssetKey   String?
+  primaryColor   String?
+  accentColor    String?
+  footerText     String?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("branding_profiles")
+}
+
+/// Registry of bytes in object storage. Source code is NEVER an artifact type.
+model Artifact {
+  id             String   @id @default(cuid())
+  organizationId String
+  auditRunId     String?
+  scanId         String?
+  type           String // raw | sarif | sbom | pdf | log
+  storageKey     String
+  contentType    String?
+  sizeBytes      Int?
+  checksum       String?
+  retentionExpiresAt DateTime?
+  createdAt      DateTime @default(now())
+
+  auditRun AuditRun? @relation(fields: [auditRunId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([auditRunId])
+  @@map("artifacts")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Ops: webhooks, audit log, abuse, AI cost ledger
+// ─────────────────────────────────────────────────────────────────────────
+
+model WebhookEvent {
+  id           String    @id @default(cuid())
+  provider     Provider
+  deliveryId   String    @unique
+  connectionId String?
+  eventType    String
+  payloadRef   String?
+  status       String    @default("received")
+  receivedAt   DateTime  @default(now())
+  processedAt  DateTime?
+
+  @@map("webhook_events")
+}
+
+model ActivityLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  actorUserId    String?
+  action         String
+  entityType     String?
+  entityId       String?
+  ip             String?
+  userAgent      String?
+  createdAt      DateTime @default(now())
+
+  @@index([organizationId, createdAt])
+  @@map("activity_logs")
+}
+
+/// Immutable record of DAST authorization affirmations + abuse signals.
+model AbuseEvent {
+  id             String   @id @default(cuid())
+  organizationId String
+  actor          String?
+  eventType      String
+  target         String?
+  ip             String?
+  detail         Json?
+  createdAt      DateTime @default(now())
+
+  @@index([organizationId, createdAt])
+  @@map("abuse_events")
+}
+
+/// Per-request AI token accounting, keyed on the Anthropic request_id.
+model AiUsageLedger {
+  id                 String   @id @default(cuid())
+  organizationId     String?
+  auditRunId         String?
+  requestId          String?
+  modelId            String
+  inputTokens        Int      @default(0)
+  outputTokens       Int      @default(0)
+  cacheReadTokens    Int      @default(0)
+  cacheWriteTokens   Int      @default(0)
+  batch              Boolean  @default(false)
+  createdAt          DateTime @default(now())
+
+  @@index([auditRunId])
+  @@map("ai_usage_ledger")
+}

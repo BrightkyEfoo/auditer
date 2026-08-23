@@ -1,0 +1,67 @@
+-- Row-Level Security: deny-by-default tenant isolation.
+--
+-- App code scopes queries by organizationId (primary defense). RLS is the
+-- backstop: if a WHERE is ever forgotten, Postgres still refuses to return
+-- another tenant's rows. Enforced against the DATABASE_APP_URL role only —
+-- the migration/owner role bypasses RLS to run DDL.
+--
+-- The app opens every tenant request inside a transaction that runs
+--   SET LOCAL app.current_org_id = '<org>'
+-- (see src/tenant.ts). Policies compare organization_id to that GUC.
+--
+-- Applied via `prisma migrate` as a raw-SQL step. Idempotent.
+
+-- ── App role (non-owner; RLS applies to it) ──────────────────────────────
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'auditer_app') THEN
+    CREATE ROLE auditer_app LOGIN PASSWORD 'auditer_app';
+  END IF;
+END
+$$;
+
+GRANT USAGE ON SCHEMA public TO auditer_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO auditer_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO auditer_app;
+
+-- ── Helper: current tenant from the request-scoped GUC ───────────────────
+CREATE OR REPLACE FUNCTION current_org_id() RETURNS text
+  LANGUAGE sql STABLE AS $$
+  SELECT current_setting('app.current_org_id', true)
+$$;
+
+-- ── Enable + policy on every tenant-scoped table ─────────────────────────
+-- FORCE so even the table owner is subject to RLS when connected as the app.
+DO $$
+DECLARE
+  t text;
+  tenant_tables text[] := ARRAY[
+    'organizations','memberships','invitations','connections','repositories',
+    'targets','audit_runs','scans','pillar_results','findings','triage_states',
+    'reports','branding_profiles','artifacts','activity_logs','abuse_events',
+    'ai_usage_ledger'
+  ];
+  org_col text;
+BEGIN
+  FOREACH t IN ARRAY tenant_tables LOOP
+    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+    EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+
+    -- organizations keys on id; everything else on organization_id.
+    IF t = 'organizations' THEN
+      org_col := 'id';
+    ELSE
+      org_col := 'organization_id';
+    END IF;
+
+    EXECUTE format('DROP POLICY IF EXISTS tenant_isolation ON %I', t);
+    EXECUTE format(
+      'CREATE POLICY tenant_isolation ON %I
+         USING (%I = current_org_id())
+         WITH CHECK (%I = current_org_id())',
+      t, org_col, org_col
+    );
+  END LOOP;
+END
+$$;

@@ -1,0 +1,19 @@
+{
+  "name": "@auditer/config",
+  "version": "0.0.0",
+  "private": true,
+  "files": [
+    "tsconfig",
+    "eslint"
+  ],
+  "exports": {
+    "./tsconfig/base.json": "./tsconfig/base.json",
+    "./tsconfig/nest.json": "./tsconfig/nest.json",
+    "./tsconfig/next.json": "./tsconfig/next.json",
+    "./tsconfig/lib.json": "./tsconfig/lib.json",
+    "./eslint/base.js": "./eslint/base.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

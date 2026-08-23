@@ -1,0 +1,27 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# Don't run a network `pnpm install` before every `pnpm run <script>` (turbo/CI
+# install once up front). Avoids build failures on flaky networks.
+verifyDepsBeforeRun: false
+
+# pnpm 11 blocks dependency build scripts by default. These need their
+# postinstall to run (Prisma fetches query engines; the others build native
+# accelerators we use).
+onlyBuiltDependencies:
+  - "@prisma/client"
+  - "@prisma/engines"
+  - "prisma"
+  - "esbuild"
+  - "msgpackr-extract"
+
+# Optional native deps we deliberately do NOT build. dockerode's ssh2/cpu-features
+# transport is unused (we reach Docker over TCP via the socket-proxy); protobufjs
+# runs fine without its native accelerator. Listing them here stops the
+# interactive build-approval prompt in non-interactive installs.
+ignoredBuiltDependencies:
+  - "cpu-features"
+  - "ssh2"
+  - "protobufjs"
+  - "sharp"

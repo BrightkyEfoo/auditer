@@ -1,0 +1,102 @@
+# Auditer — full self-hosted stack (Coolify-compatible).
+#
+# Security-critical topology:
+#   - worker reaches Docker ONLY through docker-socket-proxy (create-only), never
+#     the raw host socket. Scanner containers run under gVisor (runsc), no-network
+#     by default, hardened (see packages/audit-engine sandbox runner).
+#   - openbao holds the KEK; app tokens are envelope-encrypted.
+#   - the audited source code is never persisted; MinIO holds only findings/reports.
+#
+# For local dev you typically run only the infra services here (postgres, valkey,
+# minio, socket-proxy, openbao) and run api/worker/web via `pnpm dev`.
+
+name: auditer
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: auditer
+      POSTGRES_PASSWORD: auditer
+      POSTGRES_DB: auditer
+    ports: ["5432:5432"]
+    volumes: ["pg:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auditer"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    command: ["valkey-server", "--appendonly", "yes"]
+    ports: ["6379:6379"]
+    volumes: ["valkey:/data"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports: ["9000:9000", "9001:9001"]
+    volumes: ["minio:/data"]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Creates the bucket on first boot.
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb --ignore-existing local/auditer &&
+      echo 'bucket ready'"
+
+  openbao:
+    image: openbao/openbao:latest
+    cap_add: ["IPC_LOCK"]
+    environment:
+      BAO_DEV_ROOT_TOKEN_ID: dev-root-token
+      BAO_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+    command: ["server", "-dev"]
+    ports: ["8200:8200"]
+
+  # SSRF/exfiltration backstop for network-enabled sandbox steps (DAST/UX).
+  # Scanner containers get HTTP(S)_PROXY pointed here; requests to cloud
+  # metadata / RFC1918 / loopback are denied. Per-audit host scoping is layered
+  # on top (the scanner only targets the verified host).
+  egress-proxy:
+    image: ubuntu/squid:latest
+    volumes: ["./squid/squid.conf:/etc/squid/squid.conf:ro"]
+    ports: ["3128:3128"]
+    restart: unless-stopped
+
+  # Restricts the Docker API the worker can call. The worker spawns scanner
+  # containers through THIS, never the raw /var/run/docker.sock.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    environment:
+      CONTAINERS: 1 # create/inspect/remove scanner containers
+      IMAGES: 1
+      POST: 1
+      # everything else denied by default (NETWORKS/VOLUMES/EXEC/etc = 0)
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock:ro"]
+    ports: ["2375:2375"]
+    restart: unless-stopped
+
+volumes:
+  pg:
+  valkey:
+  minio:

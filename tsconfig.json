@@ -1,0 +1,9 @@
+{
+  "//": "Root tsconfig — editor/tooling anchor only. Packages extend @auditer/config/tsconfig/*.",
+  "extends": "./packages/config/tsconfig/base.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": [],
+  "exclude": ["node_modules", "**/dist", "**/.next"]
+}
