@@ -34,6 +34,7 @@ jobs:
           rsync -az --delete \
             --exclude node_modules --exclude .git --exclude dist --exclude generated \
             --exclude .next --exclude .turbo --exclude '*.tsbuildinfo' --exclude '.env' \
+            --exclude '*.pem' \
             -e "ssh -p ${{ vars.DEPLOY_PORT || '22' }}" \
             ./ "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}:${{ vars.DEPLOY_PATH }}/"
 

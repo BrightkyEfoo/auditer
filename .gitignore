@@ -27,3 +27,6 @@ coverage/
 # scanner scratch / artifacts (never commit repo tarballs or scan output)
 /tmp-workspaces/
 *.sarif
+
+# private keys — never commit
+*.pem
