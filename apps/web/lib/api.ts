@@ -129,9 +129,20 @@ export const api = {
   exportReport: (runId: string) =>
     req<{ reportId: string }>(`/reports/${runId}/export`, {
       method: "POST",
-      body: JSON.stringify({ format: "pdf" }),
+      body: JSON.stringify({ format: "html" }),
     }),
+  getReport: (runId: string) => req<Report>(`/reports/${runId}`),
 };
+
+export interface Report {
+  id: string;
+  status: string;
+  summary: unknown;
+  contentType: string | null;
+  sizeBytes: number | null;
+  /** Same-origin api path; null until the render has finished. */
+  downloadPath: string | null;
+}
 
 /** SSE endpoint for a run's live progress (cookie-authorised like the rest). */
 export function eventsUrl(runId: string): string {

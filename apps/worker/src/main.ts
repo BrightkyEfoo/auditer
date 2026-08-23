@@ -454,13 +454,16 @@ async function renderReport(job: AuditJob): Promise<void> {
     });
 
     const storage = getStorage();
-    const key = storage.buildKey({ organizationId, auditRunId, type: "pdf", ext: "html" });
+    // Typed as what it actually is. The renderer produces HTML today; when the
+    // paged PDF renderer lands, only `ext`/`contentType` change and the
+    // download endpoint follows the row instead of guessing.
+    const key = storage.buildKey({ organizationId, auditRunId, type: "report", ext: "html" });
     const put = await storage.put(key, html, "text/html");
     const artifact = await tx.artifact.create({
       data: {
         organizationId,
         auditRunId,
-        type: "pdf",
+        type: "report",
         storageKey: put.key,
         contentType: "text/html",
         sizeBytes: put.sizeBytes,

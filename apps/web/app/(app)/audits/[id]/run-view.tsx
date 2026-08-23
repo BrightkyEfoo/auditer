@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useMemo } from "react";
 import { PageHead } from "@/components/app/shell";
 import {
   Button,
+  ButtonLink,
   Chip,
   Empty,
   Label,
@@ -24,6 +25,7 @@ import {
   TRIAGE_FR,
   type AuditRun,
   type Finding,
+  type Report,
 } from "@/lib/api";
 import { cn } from "@/lib/cn";
 
@@ -39,7 +41,8 @@ export function RunView({ runId }: { runId: string }) {
   const [sevFilter, setSevFilter] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [hideTriaged, setHideTriaged] = useState(false);
-  const [exported, setExported] = useState<"idle" | "busy" | "done">("idle");
+  const [exported, setExported] = useState<"idle" | "busy" | "done" | "failed">("idle");
+  const [report, setReport] = useState<Report | null>(null);
 
   const refreshFindings = useCallback(() => {
     api.listFindings(runId).then(setFindings).catch(() => {});
@@ -52,7 +55,20 @@ export function RunView({ runId }: { runId: string }) {
     api.getAudit(runId).then((r) => {
       setRun(r);
       setStatus(r.status);
-      if (TERMINAL.has(r.status)) refreshFindings();
+      if (TERMINAL.has(r.status)) {
+        refreshFindings();
+        // A report rendered during an earlier visit is still downloadable —
+        // surface it instead of offering to generate it again.
+        api
+          .getReport(runId)
+          .then((rep) => {
+            if (rep.downloadPath) {
+              setReport(rep);
+              setExported("done");
+            }
+          })
+          .catch(() => {});
+      }
     });
 
     const es = new EventSource(eventsUrl(runId));
@@ -88,13 +104,28 @@ export function RunView({ runId }: { runId: string }) {
     await api.setTriage(f.fingerprint, s).catch(() => refreshFindings());
   }
 
+  /**
+   * Render the report, then WAIT for it. The export endpoint only enqueues a
+   * job, so returning at 202 and calling it done is what left every previous
+   * export unreachable: the user was told "exported" and given nothing.
+   */
   async function exportReport() {
     setExported("busy");
     try {
       await api.exportReport(runId);
-      setExported("done");
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const rep = await api.getReport(runId).catch(() => null);
+        if (rep?.downloadPath) {
+          setReport(rep);
+          setExported("done");
+          return;
+        }
+        if (rep?.status === "failed") break;
+      }
+      setExported("failed");
     } catch {
-      setExported("idle");
+      setExported("failed");
     }
   }
 
@@ -137,9 +168,19 @@ export function RunView({ runId }: { runId: string }) {
         }
         actions={
           TERMINAL.has(status) ? (
-            <Button onClick={exportReport} disabled={exported !== "idle"}>
-              {exported === "busy" ? "…" : exported === "done" ? "Export lancé" : "Exporter le rapport"}
-            </Button>
+            report?.downloadPath ? (
+              <ButtonLink href={report.downloadPath} variant="primary" download>
+                Télécharger le rapport
+              </ButtonLink>
+            ) : (
+              <Button onClick={exportReport} disabled={exported === "busy"}>
+                {exported === "busy"
+                  ? "rédaction en cours…"
+                  : exported === "failed"
+                    ? "Réessayer l'export"
+                    : "Générer le rapport"}
+              </Button>
+            )
           ) : undefined
         }
       />

@@ -17,7 +17,13 @@ import { createHash, randomUUID } from "node:crypto";
  * carry a short retention TTL and live under the `ephemeral/` prefix.
  */
 
-export type ArtifactType = "raw" | "sarif" | "sbom" | "pdf" | "log";
+/**
+ * `report` is the rendered deliverable, whatever its container (HTML today,
+ * PDF once the paged renderer lands). It is deliberately distinct from `pdf`:
+ * storing an HTML document under `pdf` made the row lie about its own content,
+ * and a download endpoint that trusts that row then serves the wrong type.
+ */
+export type ArtifactType = "raw" | "sarif" | "sbom" | "report" | "pdf" | "log";
 
 export interface StorageConfig {
   endpoint: string;
