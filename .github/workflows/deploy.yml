@@ -1,0 +1,73 @@
+name: deploy
+
+# Deploys to the server over SSH on every push to main:
+#   rsync the source → write the server .env from repo secrets → build + up →
+#   run the (idempotent) DB bootstrap.
+#
+# GitHub forbids secrets named GITHUB_* → we use GH_APP_* and remap to the real
+# GITHUB_APP_* env names on the server.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p "${{ vars.DEPLOY_PORT || '22' }}" -H "${{ vars.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Rsync source to server
+        run: |
+          rsync -az --delete \
+            --exclude node_modules --exclude .git --exclude dist --exclude generated \
+            --exclude .next --exclude .turbo --exclude '*.tsbuildinfo' --exclude '.env' \
+            -e "ssh -p ${{ vars.DEPLOY_PORT || '22' }}" \
+            ./ "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}:${{ vars.DEPLOY_PATH }}/"
+
+      - name: Write server .env
+        run: |
+          ssh -p "${{ vars.DEPLOY_PORT || '22' }}" \
+            "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
+            "cat > ${{ vars.DEPLOY_PATH }}/.env" <<EOF
+          WEB_URL=${{ vars.WEB_URL }}
+          WS_DIR=${{ vars.WS_DIR }}
+          OSV_DB_DIR=${{ vars.OSV_DB_DIR }}
+          SANDBOX_RUNTIME=${{ vars.SANDBOX_RUNTIME }}
+          AUTH_DEV_HEADERS=${{ vars.AUTH_DEV_HEADERS }}
+          BETTER_AUTH_SECRET=${{ secrets.BETTER_AUTH_SECRET }}
+          ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_APP_ID=${{ secrets.GH_APP_ID }}
+          GITHUB_APP_SLUG=${{ vars.GH_APP_SLUG }}
+          GITHUB_APP_CLIENT_ID=${{ secrets.GH_APP_CLIENT_ID }}
+          GITHUB_APP_CLIENT_SECRET=${{ secrets.GH_APP_CLIENT_SECRET }}
+          GITHUB_APP_WEBHOOK_SECRET=${{ secrets.GH_APP_WEBHOOK_SECRET }}
+          GITHUB_APP_PRIVATE_KEY=${{ secrets.GH_APP_PRIVATE_KEY }}
+          EOF
+
+      - name: Build + up
+        run: |
+          ssh -p "${{ vars.DEPLOY_PORT || '22' }}" \
+            "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
+            "cd ${{ vars.DEPLOY_PATH }} && docker compose -p auditer -f infra/compose/docker-compose.server.yml up -d --build"
+
+      - name: DB bootstrap (idempotent)
+        run: |
+          ssh -p "${{ vars.DEPLOY_PORT || '22' }}" \
+            "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
+            "cd ${{ vars.DEPLOY_PATH }} && docker compose -p auditer -f infra/compose/docker-compose.server.yml run --rm --no-deps -T -w /app/packages/db api bash -lc '
+              DB=postgresql://auditer:auditer@postgres:5432/auditer;
+              DATABASE_URL=\$DB node_modules/.bin/prisma db push --skip-generate --accept-data-loss;
+              psql \$DB -v ON_ERROR_STOP=1 -f prisma/sql/rls.sql'"
