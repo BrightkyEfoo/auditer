@@ -2,10 +2,245 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Tokens. Everything downstream derives from these — a value that cannot be
+ * traced back to a rule here is a bug in the system, not a style choice.
+ */
 :root {
-  color-scheme: light dark;
+  color-scheme: dark;
+
+  /* Type scale. Display sizes are viewport-driven; body sizes are not. */
+  --step-2: clamp(1.375rem, 1.1rem + 1.2vw, 1.75rem);
+  --step-3: clamp(1.875rem, 1.3rem + 2.6vw, 2.75rem);
+  --step-4: clamp(2.5rem, 1.4rem + 5vw, 4.75rem);
+  --display: clamp(3.25rem, 1rem + 10vw, 9rem);
+
+  /* Vertical rhythm. Section padding is radical on purpose: the emptiness is
+     the hierarchy. */
+  --section-y: clamp(6rem, 13vh, 12rem);
+  --gutter: clamp(1.25rem, 4vw, 3.5rem);
+
+  /* Motion. Three durations, one curve. */
+  --t-hover: 180ms;
+  --t-reveal: 620ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-body {
-  @apply bg-neutral-50 text-neutral-900 antialiased dark:bg-neutral-950 dark:text-neutral-100;
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-carbon font-display text-body text-mineral antialiased;
+    font-feature-settings: "ss01", "ss03";
+  }
+
+  /* The focus ring is part of the art direction, never removed. */
+  :focus-visible {
+    outline: 2px solid theme("colors.acid");
+    outline-offset: 3px;
+  }
+
+  ::selection {
+    background: theme("colors.acid");
+    color: theme("colors.void");
+  }
+
+  /* Scrollbar tuned to the carbon ground — a default light scrollbar on a dark
+     page is the loudest "unfinished" tell there is. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: theme("colors.line-bright") transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: theme("colors.line-bright");
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  h1,
+  h2,
+  h3 {
+    @apply font-display tracking-display;
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+}
+
+@layer components {
+  /* ── Typographic roles ────────────────────────────────────────────── */
+
+  /* Technical label. Used for every piece of metadata in the product:
+     section indices, statuses, units. Mono + uppercase + wide tracking. */
+  .label {
+    @apply font-mono text-label uppercase text-mute;
+  }
+
+  .display {
+    font-size: var(--display);
+    line-height: 0.88;
+    @apply font-display font-bold tracking-tightest;
+  }
+
+  .h-xl {
+    font-size: var(--step-4);
+    line-height: 0.98;
+    @apply font-bold tracking-tightest;
+  }
+
+  .h-lg {
+    font-size: var(--step-3);
+    line-height: 1.04;
+    @apply font-bold;
+  }
+
+  .h-md {
+    font-size: var(--step-2);
+    line-height: 1.15;
+    @apply font-medium;
+  }
+
+  .lede {
+    @apply max-w-[58ch] text-lede text-ash;
+  }
+
+  /* ── Structure ────────────────────────────────────────────────────── */
+
+  .shell {
+    @apply mx-auto w-full max-w-[1400px];
+    padding-inline: var(--gutter);
+  }
+
+  .section {
+    padding-block: var(--section-y);
+  }
+
+  /* The 12-column grid is visible on purpose: vertical hairlines behind the
+     content turn the layout system itself into the decoration. */
+  .ruled {
+    background-image: repeating-linear-gradient(
+      to right,
+      theme("colors.line") 0 1px,
+      transparent 1px calc(100% / 12)
+    );
+  }
+
+  /* Corner ticks — the print-technical marker language. Applied to the few
+     blocks that carry the most weight, never to every card. */
+  .ticked {
+    position: relative;
+  }
+  .ticked::before,
+  .ticked::after {
+    content: "";
+    position: absolute;
+    width: 7px;
+    height: 7px;
+    border-color: theme("colors.acid");
+    pointer-events: none;
+  }
+  .ticked::before {
+    top: -1px;
+    left: -1px;
+    border-top: 1px solid;
+    border-left: 1px solid;
+  }
+  .ticked::after {
+    bottom: -1px;
+    right: -1px;
+    border-bottom: 1px solid;
+    border-right: 1px solid;
+  }
+
+  /* Infinite marquee. The track holds the list twice and slides exactly half
+     its width, so the seam is never visible. Linear easing on purpose —
+     any curve here reads as a stutter. */
+  .marquee {
+    display: flex;
+    width: max-content;
+    animation: marquee-x 42s linear infinite;
+  }
+  .marquee-hold:hover .marquee {
+    animation-play-state: paused;
+  }
+  @keyframes marquee-x {
+    to {
+      transform: translateX(-50%);
+    }
+  }
+
+  /* ── Interaction ──────────────────────────────────────────────────── */
+
+  /* Underline that draws from the left on hover. The one link gesture in the
+     system; no opacity-fade hovers anywhere. */
+  .ul-draw {
+    background-image: linear-gradient(currentColor, currentColor);
+    background-repeat: no-repeat;
+    background-position: 0 100%;
+    background-size: 0% 1px;
+    transition: background-size var(--t-hover) var(--ease-out);
+  }
+  .ul-draw:hover,
+  .ul-draw:focus-visible {
+    background-size: 100% 1px;
+  }
+}
+
+@layer utilities {
+  /* Film grain over the whole page. Kept at 3.5% — enough to kill the flat
+     "generated gradient" look, low enough to never be visible as noise. */
+  .grain::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    pointer-events: none;
+    opacity: 0.035;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  .hairline {
+    @apply border border-line;
+  }
+
+  /* Scroll reveal: elements start displaced and are released by an
+     IntersectionObserver setting [data-shown]. Reduced motion skips the
+     displacement entirely rather than shortening it. */
+  [data-reveal] {
+    opacity: 0;
+    transform: translateY(22px);
+    transition:
+      opacity var(--t-reveal) var(--ease-out),
+      transform var(--t-reveal) var(--ease-out);
+    transition-delay: var(--reveal-delay, 0ms);
+  }
+  [data-reveal][data-shown] {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-reveal] {
+    opacity: 1 !important;
+    transform: none !important;
+    transition: none !important;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

@@ -1,27 +1,13 @@
 /**
- * Thin client for the api. Same-origin (/api/* is rewritten to the NestJS api),
- * so cookies flow. Dev identity is injected via headers here; in production the
- * web BFF attaches the real better-auth session and these headers go away.
+ * Browser client for the api. Same-origin: /api/* is rewritten to the NestJS
+ * api by next.config.mjs, so the session cookie rides along on its own and
+ * there is no token handling in the browser at all.
  */
-
-const DEV_ORG = process.env.NEXT_PUBLIC_DEV_ORG_ID ?? "";
-const DEV_USER = process.env.NEXT_PUBLIC_DEV_USER_ID ?? "";
-
-function devHeaders(): Record<string, string> {
-  // TODO(auth): remove once better-auth session is wired end-to-end.
-  return DEV_ORG && DEV_USER
-    ? { "x-org-id": DEV_ORG, "x-user-id": DEV_USER }
-    : {};
-}
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
     ...init,
-    headers: {
-      "content-type": "application/json",
-      ...devHeaders(),
-      ...(init?.headers ?? {}),
-    },
+    headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
     cache: "no-store",
   });
   if (!res.ok) {
@@ -39,6 +25,14 @@ export interface Repo {
   primaryLanguage: string | null;
 }
 
+export interface SeverityCounts {
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  info: number;
+}
+
 export interface AuditRun {
   id: string;
   status: string;
@@ -47,6 +41,27 @@ export interface AuditRun {
   scoringVersion: string | null;
   createdAt: string;
   finishedAt: string | null;
+}
+
+export interface AuditRunSummary extends AuditRun {
+  repository: { id: string; fullName: string; provider: string } | null;
+  counts: SeverityCounts;
+}
+
+export interface Overview {
+  repos: number;
+  runs: number;
+  lastRun: {
+    id: string;
+    status: string;
+    riskScore: number | null;
+    createdAt: string;
+    repository: { fullName: string } | null;
+  } | null;
+  openCritical: number;
+  openHigh: number;
+  avgScore: number | null;
+  trend: Array<{ runId: string; createdAt: string; riskScore: number }>;
 }
 
 export interface Finding {
@@ -88,7 +103,9 @@ export interface RemoteRepo {
 }
 
 export const api = {
+  overview: () => req<Overview>("/overview"),
   listRepos: () => req<Repo[]>("/repos"),
+  listAudits: () => req<AuditRunSummary[]>("/audits"),
   listConnections: () => req<Connection[]>("/connections"),
   listConnectionRepos: (connectionId: string) =>
     req<RemoteRepo[]>(`/connections/${connectionId}/repos`),
@@ -116,8 +133,69 @@ export const api = {
     }),
 };
 
-/** SSE URL for a run's live progress (dev headers can't ride EventSource; the
- *  api authorizes via the same rewrite + cookie/session in production). */
+/** SSE endpoint for a run's live progress (cookie-authorised like the rest). */
 export function eventsUrl(runId: string): string {
   return `/api/audits/${runId}/events`;
+}
+
+/* ── Shared display helpers ─────────────────────────────────────────────── */
+
+/** Score → letter grade. Mirrors the engine's scale; the number is authoritative. */
+export function grade(score: number | null): string {
+  if (score === null) return "—";
+  if (score >= 90) return "A";
+  if (score >= 80) return "B";
+  if (score >= 70) return "C";
+  if (score >= 60) return "D";
+  if (score >= 50) return "E";
+  return "F";
+}
+
+export function gradeTone(score: number | null): string {
+  if (score === null) return "text-mute";
+  if (score >= 80) return "text-acid";
+  if (score >= 60) return "text-medium";
+  if (score >= 50) return "text-high";
+  return "text-critical";
+}
+
+export const STATUS_FR: Record<string, string> = {
+  queued: "en file",
+  cloning: "clonage",
+  scanning: "analyse",
+  analyzing: "corrélation",
+  reporting: "rédaction",
+  done: "terminé",
+  completed_with_errors: "terminé, erreurs",
+  failed: "échec",
+  canceled: "annulé",
+};
+
+export const SEVERITY_FR: Record<string, string> = {
+  critical: "critique",
+  high: "élevé",
+  medium: "moyen",
+  low: "faible",
+  info: "info",
+};
+
+export const TRIAGE_FR: Record<string, string> = {
+  open: "ouvert",
+  false_positive: "faux positif",
+  ignored: "ignoré",
+  accepted: "accepté",
+  fixed: "corrigé",
+};
+
+/** Relative time in French, for run timestamps. */
+export function ago(iso: string): string {
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return "à l'instant";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `il y a ${m} min`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `il y a ${h} h`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `il y a ${d} j`;
+  return new Date(iso).toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" });
 }
