@@ -128,6 +128,10 @@ model User {
   email     String   @unique
   name      String?
   avatarUrl String?
+  /// scrypt digest for the email+password login (`scrypt$N$r$p$salt$hash`, see
+  /// api/src/auth/password.ts). Null for OAuth-only accounts — an account can
+  /// have both, and never having one is not an error.
+  passwordHash String?
   createdAt DateTime @default(now())
 
   identities  AuthIdentity[]

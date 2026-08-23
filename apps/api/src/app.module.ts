@@ -14,6 +14,7 @@ import { ReportsController } from "./reports/reports.controller.js";
 import { TriageController } from "./triage/triage.controller.js";
 import { TargetsController } from "./targets/targets.controller.js";
 import { TargetsService } from "./targets/targets.service.js";
+import { OverviewController } from "./overview/overview.controller.js";
 import { HealthController } from "./health/health.controller.js";
 
 @Module({
@@ -26,6 +27,7 @@ import { HealthController } from "./health/health.controller.js";
     ReportsController,
     TriageController,
     TargetsController,
+    OverviewController,
     HealthController,
   ],
   providers: [

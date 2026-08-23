@@ -4,7 +4,7 @@ import {
   ForbiddenException,
   NotFoundException,
 } from "@nestjs/common";
-import type { Pillar } from "@auditer/types";
+import type { Pillar, Severity } from "@auditer/types";
 import { cancelFlag } from "@auditer/queue";
 import { PrismaService } from "../infra/prisma.service.js";
 import { QueueService } from "../infra/queue.service.js";
@@ -20,6 +20,16 @@ export interface CreateAuditInput {
 
 /** Pillars that require a network-reachable, ownership-verified target. */
 const NETWORK_PILLARS: ReadonlySet<Pillar> = new Set(["dast", "ux"]);
+
+/** Page size of the run list. Deliberately fixed — no client-controlled take. */
+const LIST_LIMIT = 50;
+
+/** Severity histogram of a run. Always all five keys, always a number. */
+export type SeverityCounts = Record<Severity, number>;
+
+function emptyCounts(): SeverityCounts {
+  return { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+}
 
 @Injectable()
 export class AuditsService {
@@ -89,6 +99,55 @@ export class AuditsService {
       });
 
       return { runId: run.id, status: run.status };
+    });
+  }
+
+  /**
+   * Recent runs for the org, with their severity histogram.
+   *
+   * Capped at 50 — this feeds a dashboard list, not an export, and an org with
+   * a webhook on a busy repo accumulates runs faster than anyone reads them.
+   */
+  async list(auth: AuthContext) {
+    return this.prisma.tenant(auth.organizationId, async (tx) => {
+      const runs = await tx.auditRun.findMany({
+        where: { organizationId: auth.organizationId },
+        orderBy: { createdAt: "desc" },
+        take: LIST_LIMIT,
+        select: {
+          id: true,
+          status: true,
+          pillars: true,
+          riskScore: true,
+          scoringVersion: true,
+          createdAt: true,
+          finishedAt: true,
+          repository: { select: { id: true, fullName: true, provider: true } },
+        },
+      });
+      if (runs.length === 0) return [];
+
+      // ONE groupBy for the whole page. Counting per run would be 50 extra
+      // round-trips (N+1) to render what is, on screen, five little badges.
+      const grouped = await tx.finding.groupBy({
+        by: ["auditRunId", "severity"],
+        where: {
+          organizationId: auth.organizationId,
+          auditRunId: { in: runs.map((r) => r.id) },
+        },
+        _count: { _all: true },
+      });
+
+      const counts = new Map<string, SeverityCounts>();
+      for (const row of grouped) {
+        const bucket = counts.get(row.auditRunId) ?? emptyCounts();
+        bucket[row.severity] = row._count._all;
+        counts.set(row.auditRunId, bucket);
+      }
+
+      // Zero-fill: a run with no criticals must still report `critical: 0`, so
+      // the UI never has to distinguish "none" from "not loaded".
+      return runs.map((run) => ({ ...run, counts: counts.get(run.id) ?? emptyCounts() }));
     });
   }
 

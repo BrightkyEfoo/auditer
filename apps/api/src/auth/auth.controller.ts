@@ -2,16 +2,29 @@ import {
   Controller,
   Get,
   Post,
+  Body,
   Query,
   Req,
   Res,
   HttpCode,
+  HttpException,
+  HttpStatus,
+  ConflictException,
   UnauthorizedException,
 } from "@nestjs/common";
 import type { Request, Response } from "express";
 import { randomBytes } from "node:crypto";
+import { z } from "zod";
+import type { TenantClient } from "@auditer/db";
 import { PrismaService } from "../infra/prisma.service.js";
+import { ZodBody } from "../common/zod.pipe.js";
 import { SessionService, SESSION_COOKIE, readCookie } from "./session.service.js";
+import {
+  hashPassword,
+  verifyPassword,
+  decoyVerify,
+  allowCredentialAttempt,
+} from "./password.js";
 import {
   authorizeUrl as gitlabAuthorizeUrl,
   exchangeCode as gitlabExchange,
@@ -28,6 +41,30 @@ interface OAuthProfile {
   email: string;
   avatarUrl: string | null;
 }
+
+/**
+ * Minimum length is the only strength rule we enforce. Composition rules
+ * ("one digit, one symbol") push users toward predictable mangling; length is
+ * what actually costs an offline attacker, and 12 is the NIST floor for a
+ * secret with no other factor behind it.
+ */
+const MIN_PASSWORD_LENGTH = 12;
+
+const RegisterBody = z.object({
+  // Normalize before validating: a pasted address often carries whitespace and
+  // mixed case, and the row is keyed on email — "A@b.com " must not become a
+  // second account next to "a@b.com".
+  email: z.string().trim().toLowerCase().email("a valid email address is required"),
+  password: z
+    .string()
+    .min(MIN_PASSWORD_LENGTH, `password must be at least ${MIN_PASSWORD_LENGTH} characters`),
+  name: z.string().trim().min(1).optional(),
+});
+
+const LoginBody = z.object({
+  email: z.string().trim().toLowerCase().email("a valid email address is required"),
+  password: z.string().min(1),
+});
 
 /**
  * App login via GitHub OAuth (distinct from repo-access GitHub App tokens).
@@ -137,35 +174,160 @@ export class AuthController {
         update: {},
         create: { userId: user.id, provider: p.provider, providerAccountId: p.id },
       });
-      let membership = await tx.membership.findFirst({ where: { userId: user.id } });
-      if (!membership) {
-        const slug = `${p.login}-${randomBytes(3).toString("hex")}`.toLowerCase();
-        const org = await tx.organization.create({
-          data: { slug, name: `${p.name ?? p.login}'s org`, ownerUserId: user.id },
-        });
-        membership = await tx.membership.create({
-          data: { userId: user.id, organizationId: org.id, role: "owner" },
-        });
-      }
-      return { userId: user.id, organizationId: membership.organizationId };
+      const organizationId = await ensurePersonalOrg(tx, user.id, p.login, p.name);
+      return { userId: user.id, organizationId };
     });
 
+    await this.issueSession(userId, organizationId, res);
+    res.redirect(process.env.WEB_URL ?? "http://localhost:3000");
+  }
+
+  // ── Email + password ──────────────────────────────────────────────────────
+
+  /**
+   * Sign-up. Answers JSON, not a redirect: the web form posts this with fetch
+   * and needs to render field errors in place, unlike the OAuth callbacks which
+   * are top-level browser navigations.
+   */
+  @Post("register")
+  @HttpCode(200)
+  async register(
+    @Req() req: Request,
+    @Res() res: Response,
+    @Body(new ZodBody(RegisterBody)) body: z.infer<typeof RegisterBody>,
+  ): Promise<void> {
+    this.throttle(req);
+
+    // Hash before opening the transaction — scrypt burns tens of milliseconds
+    // of CPU and must not pin a database connection while it runs.
+    const passwordHash = await hashPassword(body.password);
+
+    let created: { userId: string; organizationId: string };
+    try {
+      created = await this.prisma.$transaction(async (tx) => {
+        const existing = await tx.user.findUnique({ where: { email: body.email } });
+        // Sign-up is the one place where telling the truth about an existing
+        // address is right: the user needs to know to log in instead, and the
+        // address is one they already control (or can discover) either way.
+        if (existing) throw new ConflictException({ error: "email_taken" });
+
+        const user = await tx.user.create({
+          data: { email: body.email, name: body.name ?? null, passwordHash },
+        });
+        // The login identity, kept separate from repo-access Connections. Keyed
+        // on the normalized email so a later OAuth login on the same address
+        // lands on this user instead of forking a second one.
+        await tx.authIdentity.create({
+          data: { userId: user.id, provider: "email", providerAccountId: body.email },
+        });
+        const organizationId = await ensurePersonalOrg(
+          tx,
+          user.id,
+          slugLoginFromEmail(body.email),
+          body.name ?? null,
+        );
+        return { userId: user.id, organizationId };
+      });
+    } catch (err) {
+      // Two concurrent sign-ups for the same address: the findUnique above lost
+      // the race, and the unique index is the real authority.
+      if (isUniqueViolation(err)) throw new ConflictException({ error: "email_taken" });
+      throw err;
+    }
+
+    await this.issueSession(created.userId, created.organizationId, res);
+    res.json({ ok: true });
+  }
+
+  /**
+   * Sign-in. Every failure returns the SAME 401 body whether the address is
+   * unknown, has no password (OAuth-only account), or the password is wrong —
+   * anything else turns this endpoint into an account-existence oracle.
+   */
+  @Post("login")
+  @HttpCode(200)
+  async login(
+    @Req() req: Request,
+    @Res() res: Response,
+    @Body(new ZodBody(LoginBody)) body: z.infer<typeof LoginBody>,
+  ): Promise<void> {
+    this.throttle(req);
+
+    // Read + verify outside any transaction: the KDF dominates this request and
+    // holding a connection through it would starve the pool under a burst.
+    // `users` is not a tenant table, so it is legitimately read outside tenant().
+    const user = await this.prisma.user.findUnique({ where: { email: body.email } });
+    if (!user?.passwordHash) {
+      // Spend the same KDF round we would have spent on a real digest, so
+      // response time does not leak whether the account exists.
+      await decoyVerify(body.password);
+      throw new UnauthorizedException({ error: "invalid_credentials" });
+    }
+    if (!(await verifyPassword(body.password, user.passwordHash))) {
+      throw new UnauthorizedException({ error: "invalid_credentials" });
+    }
+
+    // An account can predate its org (invited, then never onboarded), so resolve
+    // it through the same path the OAuth login uses rather than assuming one.
+    const organizationId = await this.prisma.$transaction((tx) =>
+      ensurePersonalOrg(tx, user.id, slugLoginFromEmail(user.email), user.name),
+    );
+
+    await this.issueSession(user.id, organizationId, res);
+    res.json({ ok: true });
+  }
+
+  /** 429 once an IP burns its credential budget. See password.ts for the caveats. */
+  private throttle(req: Request): void {
+    const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
+    if (!allowCredentialAttempt(ip)) {
+      throw new HttpException({ error: "rate_limited" }, HttpStatus.TOO_MANY_REQUESTS);
+    }
+  }
+
+  /** Mint the session and emit the exact same cookie pair as the OAuth path. */
+  private async issueSession(
+    userId: string,
+    organizationId: string,
+    res: Response,
+  ): Promise<void> {
     const sessionToken = await this.sessions.create(userId, organizationId);
     const secure = (process.env.WEB_URL ?? "").startsWith("https") ? "; Secure" : "";
     res.setHeader("Set-Cookie", [
       `${SESSION_COOKIE}=${sessionToken}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${30 * 24 * 60 * 60}${secure}`,
       `auditer_oauth_state=; Path=/; Max-Age=0`,
     ]);
-    res.redirect(process.env.WEB_URL ?? "http://localhost:3000");
   }
 
+  /**
+   * Whoami. Returns the user and the active org alongside the ids so the web
+   * shell can paint the account menu and the org name on first load instead of
+   * firing two more round-trips behind every navigation.
+   *
+   * Unauthenticated stays `{ authenticated: false }` and nothing else — an
+   * expired session must not leak who it used to belong to.
+   */
   @Get("session")
   async session(@Req() req: Request) {
     const token = readCookie(req.header("cookie"), SESSION_COOKIE);
     if (!token) return { authenticated: false };
     const resolved = await this.sessions.resolve(token);
     if (!resolved) return { authenticated: false };
-    return { authenticated: true, ...resolved };
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: resolved.userId },
+      select: { id: true, email: true, name: true, avatarUrl: true },
+    });
+    // `organizations` IS RLS-scoped, so this read goes through tenant() — a
+    // direct findUnique would come back empty under the app role.
+    const org = await this.prisma.tenant(resolved.organizationId, (tx) =>
+      tx.organization.findUnique({
+        where: { id: resolved.organizationId },
+        select: { id: true, name: true, slug: true },
+      }),
+    );
+
+    return { authenticated: true, ...resolved, user, org };
   }
 
   @Post("logout")
@@ -176,6 +338,51 @@ export class AuthController {
     res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; Path=/; Max-Age=0`);
     res.json({ ok: true });
   }
+}
+
+// ── Onboarding helpers ──────────────────────────────────────────────────────
+
+/**
+ * Return the user's organization, creating a personal one on first sight.
+ *
+ * Shared by every login path (GitHub, GitLab, email) so the slug is minted in
+ * exactly one place. The random suffix is not decoration: logins collide across
+ * providers and across email domains — the "alice" on GitHub and the owner of
+ * alice@example.com are two different people, and `slug` is unique.
+ */
+async function ensurePersonalOrg(
+  tx: TenantClient,
+  userId: string,
+  login: string,
+  name: string | null,
+): Promise<string> {
+  let membership = await tx.membership.findFirst({ where: { userId } });
+  if (!membership) {
+    const slug = `${login}-${randomBytes(3).toString("hex")}`.toLowerCase();
+    const org = await tx.organization.create({
+      data: { slug, name: `${name ?? login}'s org`, ownerUserId: userId },
+    });
+    membership = await tx.membership.create({
+      data: { userId, organizationId: org.id, role: "owner" },
+    });
+  }
+  return membership.organizationId;
+}
+
+/**
+ * Slug-safe stand-in for the OAuth `login` handle. Email local parts allow `+`,
+ * dots and quoted forms that have no business in a URL, so keep only what a
+ * slug can carry and never emit an empty string.
+ */
+function slugLoginFromEmail(email: string): string {
+  const local = email.split("@")[0] ?? "";
+  const cleaned = local.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return cleaned || "user";
+}
+
+/** Prisma unique-constraint violation, duck-typed to avoid an instanceof across the generated client. */
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "P2002";
 }
 
 // ── GitHub helpers ──────────────────────────────────────────────────────────

@@ -36,6 +36,15 @@ export class AuditsController {
     return this.audits.create(auth, body);
   }
 
+  /**
+   * MUST stay above @Get(":id") — Nest matches routes in declaration order, so
+   * a `:id` param route declared first would swallow the collection request.
+   */
+  @Get()
+  list(@Auth() auth: AuthContext) {
+    return this.audits.list(auth);
+  }
+
   @Get(":id")
   get(@Auth() auth: AuthContext, @Param("id") id: string) {
     return this.audits.get(auth, id);
