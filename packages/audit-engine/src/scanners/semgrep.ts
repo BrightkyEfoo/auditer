@@ -5,10 +5,19 @@ import { DEFAULT_HARDENING, CONTAINER_REPO_PATH } from "../ports/sandbox.js";
 import { normalizeSarif, type SarifLog } from "../normalize/sarif.js";
 
 /**
- * SAST pillar — Semgrep OSS with a VENDORED, version-pinned ruleset. We do NOT
- * pass `--config p/...` (which fetches from the registry at runtime and is
- * subject to ToS + relicensing drift); instead the image ships a pinned rules
- * snapshot mounted at /rules, so builds are reproducible and offline.
+ * SAST pillar — Semgrep OSS against a VENDORED ruleset baked into our own image
+ * at /rules (see infra/docker/scanners/semgrep).
+ *
+ * Two independent reasons the ruleset cannot come from upstream:
+ *
+ * 1. Licensing. `--config p/...` pulls Semgrep's registry rules, which carry the
+ *    "Semgrep Rules License v1.0" — it forbids making the rules "available to
+ *    others as a service", which is precisely what this product does. The
+ *    Opengrep fork does not help: its corpus is LGPL-2.1 + Commons Clause,
+ *    which forbids selling a service deriving its value from the software. Our
+ *    image is built from GitLab's sast-rules, filtered to MIT/Apache-2.0 only.
+ * 2. Determinism. A registry fetch at scan time means two runs of the same
+ *    commit can disagree. The rules are pinned to the image digest instead.
  *
  * Semgrep emits SARIF natively → the shared normalizer does the parse.
  * Language-native scanners (Bandit/gosec/eslint-plugin-security) are layered on
@@ -20,8 +29,10 @@ export class SemgrepAdapter implements ScannerAdapter {
   readonly tool = "semgrep";
   readonly isolationTier = "gvisor" as const;
   readonly needsNetwork = false;
-  // TODO(infra): pin @sha256 + bake the vendored ruleset into /rules.
-  readonly image = "semgrep/semgrep:1.99.0";
+  // Built by infra/docker/scanners/semgrep, not pulled from a registry: the
+  // rules live inside it. Built on the deploy host, so the worker resolves it
+  // from the local daemon. TODO(infra): pin @sha256 once pushed to a registry.
+  readonly image = "auditer/semgrep-rules:1.99.0-1";
 
   appliesTo(_ctx: ScanContext): boolean {
     return true; // any source tree is in scope for SAST

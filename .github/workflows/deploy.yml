@@ -61,6 +61,16 @@ jobs:
           GITLAB_CLIENT_SECRET=${{ secrets.GITLAB_CLIENT_SECRET }}
           EOF
 
+      - name: Build scanner images
+        # Scanner images the worker spawns are separate from the app image: they
+        # are never pulled from a registry we do not control. Built here so the
+        # local daemon can resolve them by tag when the worker asks for them.
+        # Idempotent — Docker layer cache makes a no-change rebuild instant.
+        run: |
+          ssh -p "${{ vars.DEPLOY_PORT || '22' }}" \
+            "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
+            "cd ${{ vars.DEPLOY_PATH }} && docker build -t auditer/semgrep-rules:1.99.0-1 infra/docker/scanners/semgrep"
+
       - name: Build + up
         run: |
           ssh -p "${{ vars.DEPLOY_PORT || '22' }}" \
