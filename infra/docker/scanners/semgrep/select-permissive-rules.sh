@@ -36,6 +36,17 @@ dropped=0
 
 while IFS= read -r -d '' file; do
   rel="${file#"$SRC"/}"
+
+  # Structural check first: is this actually a Semgrep ruleset? The tree also
+  # holds CWE mapping tables and CI config that carry the same MIT header, and
+  # a single non-ruleset YAML under --config makes semgrep report
+  # "invalid configuration file found" and return nothing at all.
+  if ! grep -q '^rules:' "$file"; then
+    printf '%s\tNOT-A-RULESET\n' "$rel" >>/tmp/dropped.txt
+    dropped=$((dropped + 1))
+    continue
+  fi
+
   # The annotation lives in the first few comment lines of each rule file.
   header="$(head -n 6 "$file" | grep -i '^#\s*License:' || true)"
 

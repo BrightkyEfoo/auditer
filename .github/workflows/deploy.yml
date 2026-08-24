@@ -69,7 +69,7 @@ jobs:
         run: |
           ssh -p "${{ vars.DEPLOY_PORT || '22' }}" \
             "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
-            "cd ${{ vars.DEPLOY_PATH }} && docker build -t auditer/semgrep-rules:1.99.0-1 infra/docker/scanners/semgrep"
+            "cd ${{ vars.DEPLOY_PATH }} && docker build -t auditer/semgrep-rules:1.99.0-2 infra/docker/scanners/semgrep"
 
       - name: Build + up
         run: |

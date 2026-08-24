@@ -32,7 +32,7 @@ export class SemgrepAdapter implements ScannerAdapter {
   // Built by infra/docker/scanners/semgrep, not pulled from a registry: the
   // rules live inside it. Built on the deploy host, so the worker resolves it
   // from the local daemon. TODO(infra): pin @sha256 once pushed to a registry.
-  readonly image = "auditer/semgrep-rules:1.99.0-1";
+  readonly image = "auditer/semgrep-rules:1.99.0-2";
 
   appliesTo(_ctx: ScanContext): boolean {
     return true; // any source tree is in scope for SAST
