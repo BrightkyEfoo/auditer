@@ -54,7 +54,47 @@ describe("countZipEntries", () => {
   it("rejette une réponse vide", () => {
     expect(() => countZipEntries(Buffer.alloc(0))).toThrow(/fin d'archive/);
   });
+
+  it("lit le compte d'une archive ZIP64", () => {
+    // Not hypothetical: the npm archive holds more than 65 535 advisories and
+    // arrives as ZIP64. Treating the 0xffff sentinel as unreadable rejected the
+    // single largest ecosystem in the database.
+    expect(countZipEntries(zip64Tail(70_000))).toBe(70_000);
+  });
+
+  it("rejette une archive ZIP64 dont le localisateur manque", () => {
+    const buf = zip64Tail(70_000);
+    // Corrupt the locator signature — a truncation that lands between the ZIP64
+    // record and the classic EOCD.
+    buf.writeUInt32LE(0, buf.length - 22 - 20);
+    expect(() => countZipEntries(buf)).toThrow(/localisateur/);
+  });
 });
+
+/**
+ * Minimal ZIP64 tail: [ZIP64 EOCD record][ZIP64 locator][EOCD with the 0xffff
+ * sentinel]. Hand-built rather than produced by `zip`, because forcing a real
+ * archive over the 65 535-entry threshold would mean creating 65 536 files per
+ * test run.
+ */
+function zip64Tail(entries: number): Buffer {
+  const record = Buffer.alloc(56);
+  record.writeUInt32LE(0x06064b50, 0);
+  record.writeBigUInt64LE(BigInt(44), 4); // size of remaining record
+  record.writeBigUInt64LE(BigInt(entries), 24); // entries on this disk
+  record.writeBigUInt64LE(BigInt(entries), 32); // total entries
+
+  const locator = Buffer.alloc(20);
+  locator.writeUInt32LE(0x07064b50, 0);
+  locator.writeBigUInt64LE(BigInt(0), 8); // record sits at offset 0
+  locator.writeUInt32LE(1, 16);
+
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(0xffff, 10); // sentinel: read the ZIP64 record instead
+
+  return Buffer.concat([record, locator, eocd]);
+}
 
 describe("OSV_ECOSYSTEMS", () => {
   it("couvre les écosystèmes que les piliers annoncent", () => {

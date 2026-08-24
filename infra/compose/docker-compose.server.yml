@@ -186,6 +186,13 @@ services:
       - "${WS_DIR:-/home/brightky/auditer-workspaces}:${WS_DIR:-/home/brightky/auditer-workspaces}"
       # EPSS/KEV snapshot, read-only: the worker enriches findings after dedup.
       - "${VULN_FEEDS_DIR:-/home/brightky/auditer-vuln-feeds}:${VULN_FEEDS_DIR:-/home/brightky/auditer-vuln-feeds}:ro"
+      # OSV database, read-only. The worker does NOT scan with it — that happens
+      # in the scanner container, which gets its own mount. It reads the
+      # manifest, so the report can state which ecosystems the SCA verdict
+      # actually covered and how old that data was. "No known vulnerabilities"
+      # is a claim about a dataset; a report that cannot name the dataset is
+      # making a timeless claim it has no basis for.
+      - "${OSV_DB_DIR:-/home/brightky/auditer-osv-db}:${OSV_DB_DIR:-/home/brightky/auditer-osv-db}:ro"
 
   # One-shot job, never started by `up`: downloads the EPSS + CISA-KEV snapshot
   # the enrichment step reads. It exists as a service because the deploy host

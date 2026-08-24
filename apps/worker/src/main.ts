@@ -27,6 +27,7 @@ import { buildDeltaReportHtml } from "./report-delta.js";
 import { buildAttestationHtml } from "./report-attestation.js";
 import { loadProgress, type ProgressContext } from "./delta.js";
 import { startRetentionScheduler } from "./retention-scheduler.js";
+import { readOsvCoverage } from "./osv-coverage.js";
 
 /**
  * The worker: consumes `audit` jobs and drives the whole pipeline in-process —
@@ -171,6 +172,23 @@ async function processAudit(job: AuditJob): Promise<void> {
 
     await setStatus(auditRunId, organizationId, "scanning");
     await publisher.status(auditRunId, "scanning");
+
+    // State the dependency database BEFORE the scans, in the live trace. The
+    // server ran for weeks with a single ecosystem archive on disk and nothing
+    // said so — every non-npm repository simply had no dependency verdict. A
+    // coverage line at the top of the run is what makes that visible while it
+    // is still happening, instead of after a customer reads a clean pillar.
+    if (job.pillars.includes("sca")) {
+      const cov = await readOsvCoverage();
+      await publisher.log(
+        auditRunId,
+        cov
+          ? `base OSV : ${cov.covered.length} écosystème(s), ${cov.advisories} avis` +
+              (cov.oldest ? `, plus ancienne archive ${cov.oldest}` : "") +
+              (cov.missing.length ? ` — INDISPONIBLES : ${cov.missing.join(", ")}` : "")
+          : "base OSV : provenance introuvable — le verdict sur les dépendances sera invérifiable",
+      );
+    }
 
     const adapters = registry.forPillars(job.pillars);
     const allRaw: RawFinding[] = [];
@@ -683,6 +701,12 @@ async function renderReport(job: AuditJob): Promise<void> {
       .map((s) => (s.stats as Record<string, number> | null)?.["loc.code"])
       .find((n): n is number => typeof n === "number" && n > 0);
 
+    // Provenance of the offline dependency database. Read here rather than
+    // persisted per run: the alternative was a migration for a field that only
+    // the renderer consumes, and a report rendered from a run is rendered in the
+    // same deployment that scanned it.
+    const osvDb = await readOsvCoverage();
+
     const generatedAt = new Date().toISOString();
     const runAt = (run.finishedAt ?? run.createdAt).toISOString();
     const measuredPillars = measuredPillarsOf(scans);
@@ -785,6 +809,7 @@ async function renderReport(job: AuditJob): Promise<void> {
           kloc: locCode != null ? locCode / 1000 : null,
           klocMeasured: locCode != null,
           vulnFeedsSnapshot: run.vulnFeedsSnapshot?.toISOString() ?? null,
+          osvDb,
           pillars: pillars.map((p) => ({ pillar: p.pillar, score: p.score, grade: p.grade })),
           summary: (reportRow?.summary as ExecutiveSummary | null) ?? null,
           findings: findings.map((f) => ({

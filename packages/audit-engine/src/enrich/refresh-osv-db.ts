@@ -69,7 +69,10 @@ export const OSV_ECOSYSTEMS = [
   "CRAN", // renv.lock
   "Hackage", // cabal.project.freeze, stack.yaml.lock
   "SwiftURL", // Package.resolved
-  "ConanCenter", // conan.lock
+  // No `ConanCenter`: osv-scanner names that ecosystem, but the OSV bucket
+  // publishes no archive for it (HTTP 404, verified 2026-08-24). Listing it
+  // produced a hard failure on every refresh for coverage that does not exist
+  // to be had. C/C++ dependencies are therefore NOT covered by this pillar.
 ] as const;
 
 export type OsvEcosystem = (typeof OSV_ECOSYSTEMS)[number];
@@ -96,7 +99,6 @@ const MIN_ENTRIES: Record<string, number> = {
   CRAN: 5,
   Hackage: 5,
   SwiftURL: 5,
-  ConanCenter: 5,
 };
 
 const DEFAULT_MIN_ENTRIES = 5;
@@ -263,14 +265,40 @@ export function countZipEntries(buf: Buffer): number {
   for (let i = buf.length - 22; i >= min; i--) {
     if (buf.readUInt32LE(i) === 0x06054b50) {
       const total = buf.readUInt16LE(i + 10);
-      // 0xffff is the ZIP64 sentinel: the real count lives in the ZIP64 EOCD.
-      // OSV archives are far below that, so treat it as unreadable rather than
-      // guessing — an unreadable count must not pass the floor check.
-      if (total === 0xffff) throw new Error("archive ZIP64 — nombre d'entrees illisible");
+      // 0xffff is the ZIP64 sentinel, and it is not hypothetical: the npm
+      // archive holds more than 65 535 advisories and reaches us as ZIP64.
+      // Treating the sentinel as unreadable rejected the single largest, most
+      // consulted ecosystem in the database — caught only because the refresher
+      // reported it as empty instead of quietly shipping it.
+      if (total === 0xffff) return countZip64Entries(buf, i);
       return total;
     }
   }
   throw new Error("pas d'enregistrement de fin d'archive ZIP (telechargement tronque ?)");
+}
+
+/**
+ * ZIP64 entry count.
+ *
+ * The classic EOCD is preceded by a 20-byte locator holding the absolute offset
+ * of the ZIP64 EOCD record, whose entry count is a 64-bit field. Read through
+ * the locator rather than scanning for the record: a scan could match those four
+ * bytes inside compressed data, and a wrong count here would either reject a
+ * good archive or accept a truncated one.
+ */
+function countZip64Entries(buf: Buffer, eocdOffset: number): number {
+  const locator = eocdOffset - 20;
+  if (locator < 0 || buf.readUInt32LE(locator) !== 0x07064b50) {
+    throw new Error("archive ZIP64 sans localisateur de fin (telechargement tronque ?)");
+  }
+  const recordOffset = Number(buf.readBigUInt64LE(locator + 8));
+  if (recordOffset < 0 || recordOffset + 56 > buf.length) {
+    throw new Error("archive ZIP64 tronquee avant son enregistrement de fin");
+  }
+  if (buf.readUInt32LE(recordOffset) !== 0x06064b50) {
+    throw new Error("enregistrement de fin ZIP64 introuvable a l'offset annonce");
+  }
+  return Number(buf.readBigUInt64LE(recordOffset + 32));
 }
 
 class FatalDownloadError extends Error {}

@@ -88,6 +88,13 @@ interface ReportInput {
   klocMeasured?: boolean;
   /** Snapshot date of the vulnerability databases used by this run. */
   vulnFeedsSnapshot?: string | null;
+  /** Provenance of the offline OSV database the SCA verdict rests on. */
+  osvDb?: {
+    covered: string[];
+    missing: string[];
+    advisories: number;
+    oldest: string | null;
+  } | null;
   excludedPaths?: string[];
 }
 
@@ -350,6 +357,23 @@ ${
   <li>La couverture des vulnérabilités connues dépend de la fraîcheur des bases utilisées${
     r.vulnFeedsSnapshot ? `, dont l'instantané date du ${esc(fmtDate(r.vulnFeedsSnapshot))}` : ""
   }.</li>
+  ${
+    r.osvDb
+      ? `<li>Le verdict sur les dépendances repose sur une base hors ligne de ${r.osvDb.advisories.toLocaleString(
+          "fr-FR",
+        )} avis couvrant ${r.osvDb.covered.length} écosystème(s) — <span class="mono">${esc(
+          r.osvDb.covered.join(", "),
+        )}</span>${
+          r.osvDb.oldest ? `, la plus ancienne archive datant du ${esc(fmtDate(r.osvDb.oldest))}` : ""
+        }. Une dépendance d'un écosystème absent de cette liste n'a pas été confrontée à quoi que ce soit${
+          r.osvDb.missing.length
+            ? ` — écosystèmes indisponibles pour ce relevé : <span class="mono">${esc(
+                r.osvDb.missing.join(", "),
+              )}</span>`
+            : ""
+        }.</li>`
+      : `<li>La provenance de la base de dépendances n'a pas pu être établie pour ce relevé. L'absence de vulnérabilité signalée sur les dépendances ne doit donc pas être lue comme un résultat daté.</li>`
+  }
   <li>Les explications et les propositions de correctif sont rédigées par un modèle de langage à partir de la sortie brute des moteurs. Le score, lui, est calculé par une formule déterministe et versionnée : le modèle n'y touche pas.</li>
   <li>Le résultat vaut pour le commit indiqué. Toute modification ultérieure du code invalide ce relevé.</li>
 </ul>
