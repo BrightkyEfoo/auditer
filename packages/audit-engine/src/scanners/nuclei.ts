@@ -38,17 +38,16 @@ export class NucleiAdapter implements ScannerAdapter {
   readonly tool = "nuclei";
   readonly isolationTier = "gvisor" as const;
   readonly needsNetwork = true;
-  // nuclei v3.4.10 — pinned by digest.
+  // OUR image: nuclei v3.4.10 + nuclei-templates v10.4.8 baked in at /templates
+  // (infra/docker/scanners/nuclei), because the upstream image ships the binary
+  // and NO templates — see classifyExit below for what that cost us.
   //
-  // This adapter used to name `v3.3.7`, a tag that was NEVER PUBLISHED: upstream
-  // cut a v3.3.7 GitHub release but pushed no container for it (Docker Hub goes
+  // The upstream base is itself pinned by digest inside that Dockerfile. It used
+  // to be named here as `v3.3.7`, a tag that was NEVER PUBLISHED: upstream cut a
+  // v3.3.7 GitHub release but pushed no container for it (Docker Hub goes
   // v3.3.6 → v3.3.8). Every DAST run would have died on an unresolvable pull —
-  // the kind of break a moving tag hides and a digest cannot. v3.4.10 is the
-  // newest v3.4 patch and was confirmed pullable on the x86_64 deploy host, so
-  // it is the version this pin follows. Not cosign-signed (see
-  // infra/docker/scanners/README.md).
-  readonly image =
-    "projectdiscovery/nuclei@sha256:aeb5ea2db32a252b8135707d2ad0e89b90e19a18ea7816d38759bc51efb46b97";
+  // the kind of break a moving tag hides and a digest cannot.
+  readonly image = "auditer/nuclei:3.4.10-t10.4.8-1";
 
   appliesTo(ctx: ScanContext): boolean {
     return Boolean(ctx.target?.url);
@@ -65,16 +64,17 @@ export class NucleiAdapter implements ScannerAdapter {
     };
     return {
       image: this.image,
+      // `-templates`, `-jsonl`, `-output`, `-no-interactsh` and
+      // `-disable-update-check` belong to the image's entrypoint, not here: they
+      // are output plumbing and sandbox constraints, and the wrapper is what
+      // asserts a non-empty template load before any verdict is returned.
       cmd: [
         "-target",
         url,
-        "-jsonl",
-        "-silent",
         "-rate-limit",
         "50", // be a good citizen even on our own targets
         "-severity",
         "low,medium,high,critical",
-        "-disable-update-check",
       ],
       network,
       isolationTier: this.isolationTier,
@@ -88,22 +88,20 @@ export class NucleiAdapter implements ScannerAdapter {
     if (result.timedOut) return "partial";
     // nuclei exits 0 whether or not it finds anything; nonzero = error.
     //
-    // KNOWN SILENT HOLE — this mapping is not safe yet, and the reason is the
-    // image, not the code. Upstream's Dockerfile (verified at v3.4.10) installs
-    // ONLY the nuclei binary: `COPY --from=builder /app/bin/nuclei` on top of
-    // alpine, no template corpus. nuclei therefore fetches nuclei-templates from
-    // GitHub on first run — which this sandbox forbids twice over, since egress
-    // is proxy-scoped to the audited host alone and the container runs as 65534
-    // with no writable HOME. A run with zero templates probes nothing, prints
-    // nothing, and exits 0, so the line above records "success" and the DAST
-    // pillar reads CLEAN on a scan that never happened.
+    // That mapping was a SILENT HOLE until the image carried its own corpus.
+    // Upstream's Dockerfile (verified at v3.4.10) installs only the binary, so
+    // nuclei fetched nuclei-templates from GitHub on first run — forbidden twice
+    // over here, since egress is proxy-scoped to the audited host alone and the
+    // container runs as 65534 with no writable HOME. A run with zero templates
+    // probes nothing, prints nothing and exits 0: the line below recorded
+    // "success" and the DAST pillar read CLEAN on a scan that never happened.
     //
-    // Do not paper over this with a stdout heuristic: `-silent` suppresses the
-    // template count, so there is nothing dependable to match on. The fix is to
-    // bake a reviewed, pinned nuclei-templates corpus into an image we build
-    // (the auditer/semgrep-rules pattern — infra/docker/scanners/semgrep) and
-    // pass `-templates`, which also makes DAST verdicts reproducible instead of
-    // dependent on the day the corpus was fetched.
+    // What makes exit 0 trustworthy now is not the corpus being present but the
+    // entrypoint refusing to stay quiet about it: infra/docker/scanners/nuclei
+    // reads back the template count nuclei reports FOR THIS RUN and exits 65
+    // (count unreadable) or 66 (count zero) rather than returning an empty
+    // verdict. A stdout heuristic could not have done this — `-silent` suppresses
+    // the very line that carries the count, which is why the wrapper drops it.
     return result.exitCode === 0 ? "success" : "fail";
   }
 

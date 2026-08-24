@@ -71,7 +71,7 @@ jobs:
         run: |
           ssh -p "${{ vars.DEPLOY_PORT || '22' }}" \
             "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
-            "cd ${{ vars.DEPLOY_PATH }} && docker build -t auditer/semgrep-rules:1.99.0-2 infra/docker/scanners/semgrep && docker build -t auditer/jscpd:5.0.16-1 infra/docker/scanners/jscpd"
+            "cd ${{ vars.DEPLOY_PATH }} && docker build -t auditer/semgrep-rules:1.99.0-2 infra/docker/scanners/semgrep && docker build -t auditer/jscpd:5.0.16-1 infra/docker/scanners/jscpd && docker build -t auditer/nuclei:3.4.10-t10.4.8-1 infra/docker/scanners/nuclei"
 
       - name: Pull third-party scanner images
         # The worker spawns scanners through the docker-socket-proxy, which is
@@ -94,9 +94,10 @@ jobs:
         # infra/docker/scanners/README.md for the bump procedure.
         #
         # Images we build ourselves (auditer/semgrep-rules, auditer/jscpd,
-        # auditer/chromium-pdf) are absent on purpose — the neighbouring build
-        # steps produce them, they were never pushed to a registry, and there is
-        # no digest to pull them by.
+        # auditer/nuclei, auditer/chromium-pdf) are absent on purpose — the
+        # neighbouring build steps produce them, they were never pushed to a
+        # registry, and there is no digest to pull them by. Their upstream BASES
+        # are pinned by digest inside their Dockerfiles and pulled by the build.
         run: |
           ssh -p "${{ vars.DEPLOY_PORT || '22' }}" \
             "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
@@ -107,12 +108,14 @@ jobs:
                aquasec/trivy@sha256:b88012e2a0a309d6a8a00463d4e63e5e513377fb74eccbc8f9b0f8f81940ebeb \
                hadolint/hadolint@sha256:30a8fd2e785ab6176eed53f74769e04f125afb2f74a6c52aef7d463583b6d45e \
                ghcr.io/boyter/scc@sha256:537c0a10cf21cdbefb8b1e644e3cef9a736bdc0ca11ee8deee2dc31e5b8ed7a3 \
-               projectdiscovery/nuclei@sha256:aeb5ea2db32a252b8135707d2ad0e89b90e19a18ea7816d38759bc51efb46b97 \
                femtopixel/google-lighthouse@sha256:609559dac4184c63bcddaa7e109f3865c4eb44f46a3eb91eeaf22a09598eccdc; do
                docker image inspect \"\$img\" >/dev/null 2>&1 || docker pull -q \"\$img\"
              done"
         # gitleaks v8.21.2 | osv-scanner v1.9.2 | trivy 0.58.0 | hadolint 2.12.0
-        # scc v3.4.0 | nuclei v3.4.10 | google-lighthouse v8.6.0
+        # scc v3.4.0 | google-lighthouse v8.6.0
+        #
+        # nuclei left this list when it stopped being a third-party image: it is
+        # now auditer/nuclei, built above so its template corpus ships with it.
 
       - name: Build report renderer image
         # Headless Chromium that turns the report HTML into the PDF deliverable

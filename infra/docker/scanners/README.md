@@ -25,7 +25,7 @@ version is running.
 | quality  | `scc`           | `ghcr.io/boyter/scc` v3.4.0 | `sha256:537c0a10cf21cdbefb8b1e644e3cef9a736bdc0ca11ee8deee2dc31e5b8ed7a3` | **signed, verified** | MIT |
 | hygiene  | `trivy-config`  | `aquasec/trivy` 0.58.0 | `sha256:b88012e2a0a309d6a8a00463d4e63e5e513377fb74eccbc8f9b0f8f81940ebeb` | **signed, verified** | Apache-2.0 |
 | hygiene  | `hadolint`      | `hadolint/hadolint` 2.12.0 | `sha256:30a8fd2e785ab6176eed53f74769e04f125afb2f74a6c52aef7d463583b6d45e` | none published | GPL-3.0 (separate container, never linked) |
-| dast     | `nuclei`        | `projectdiscovery/nuclei` v3.4.10 | `sha256:aeb5ea2db32a252b8135707d2ad0e89b90e19a18ea7816d38759bc51efb46b97` | none published | MIT |
+| dast     | `nuclei`        | `auditer/nuclei:3.4.10-t10.4.8-1` — built here, base `projectdiscovery/nuclei` v3.4.10 | base `sha256:aeb5ea2db32a252b8135707d2ad0e89b90e19a18ea7816d38759bc51efb46b97` | base: none published | MIT (binary + templates) |
 | ux       | `lighthouse`    | `femtopixel/google-lighthouse` v8.6.0 | `sha256:609559dac4184c63bcddaa7e109f3865c4eb44f46a3eb91eeaf22a09598eccdc` | none published | Apache-2.0 (Lighthouse) |
 
 Two references in that table were not merely unpinned, they were **unpullable**,
@@ -60,16 +60,23 @@ reports **clean** instead of reporting an error.
   no DB mounted it exits 127, which `classifyExit` maps to `fail` — a missing DB
   is loud, not a silent zero-vulnerability report.)
 
-**`nuclei` is the one still open, and it is the worst of the three.** Upstream's
-Dockerfile (checked at v3.4.10) installs only the nuclei binary on top of alpine
-— **no template corpus**. nuclei fetches nuclei-templates from GitHub on first
-run, which this sandbox forbids twice: egress is proxy-scoped to the audited host
-alone, and the container runs as 65534 with no writable HOME. A run with zero
-templates probes nothing, prints nothing and **exits 0**, so `classifyExit`
-records success and the DAST pillar reads clean on a scan that never happened. A
-stdout heuristic cannot patch this — `-silent` suppresses the template count. The
-fix is to bake a reviewed, pinned nuclei-templates corpus into an image we build
-(the `auditer/semgrep-rules` pattern) and pass `-templates`.
+- **`nuclei` was the worst of the four, and it is now closed.** Upstream's
+  Dockerfile (checked at v3.4.10) installs only the nuclei binary on top of
+  alpine — **no template corpus**. nuclei fetches nuclei-templates from GitHub on
+  first run, which this sandbox forbids twice: egress is proxy-scoped to the
+  audited host alone, and the container runs as 65534 with no writable HOME. A
+  run with zero templates probes nothing, prints nothing and **exits 0**, so
+  `classifyExit` recorded success and the DAST pillar read clean on a scan that
+  never happened. Fixed by `infra/docker/scanners/nuclei`, which bakes
+  nuclei-templates `v10.4.8` (pinned by tag *and* commit) at `/templates`.
+
+  Baking the corpus alone would not have been enough, and this is the part worth
+  keeping: the entrypoint reads back the template count nuclei reports **for that
+  run** and exits 65 (count unreadable) or 66 (count zero) instead of returning
+  an empty verdict. A corpus present but not loaded — wrong `-templates` path, a
+  severity filter that matches nothing — produces the same silent zero as no
+  corpus at all. That is why the wrapper drops `-silent`: the suppressed line is
+  the count itself.
 
 So when bumping or adding a scanner, **run the adapter's exact argv against the
 pinned image** and confirm the report lands on stdout. `pnpm build` proves

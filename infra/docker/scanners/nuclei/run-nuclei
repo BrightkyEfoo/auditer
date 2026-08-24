@@ -1,0 +1,65 @@
+#!/bin/sh
+# Lance nuclei sur le corpus embarqué et REFUSE de rendre un verdict vide qui
+# n'en serait pas un.
+#
+# Le défaut fermé ici n'est pas un plantage, c'est un silence : nuclei sort en 0
+# qu'il ait chargé dix mille templates ou aucun. Sans le contrôle ci-dessous,
+# une image sans corpus, un filtre de sévérité trop étroit ou un chemin
+# `-templates` erroné produisent tous la même sortie — vide, code 0 — et le
+# pilier DAST se lit PROPRE sur une analyse qui n'a rien sondé.
+#
+# Le contrôle porte donc sur ce que nuclei DÉCLARE avoir chargé pour ce run, pas
+# sur ce qui traîne sur le disque : un corpus présent mais non chargé est
+# exactement le cas qu'on veut attraper.
+set -eu
+
+OUT=/scratch/nuclei.jsonl
+LOG=/scratch/nuclei.log
+mkdir -p /scratch
+
+# `-silent` est délibérément absent : il supprime la ligne de journal qui porte
+# le nombre de templates chargés, c'est-à-dire la seule preuve exploitable que
+# l'analyse a eu lieu. Le journal part sur un fichier, jamais sur stdout, que
+# l'adaptateur lit comme du JSONL.
+#
+# `-no-interactsh` est un constat, pas une préférence : la détection hors bande
+# passe par un serveur tiers (oast.pro), or la sortie réseau est limitée par
+# proxy au seul hôte audité. Ces templates ne peuvent pas aboutir ici ; les
+# laisser actifs ferait attendre le scan pour des interactions qui n'arriveront
+# jamais.
+set +e
+nuclei \
+  -templates /templates \
+  -jsonl \
+  -output "$OUT" \
+  -no-interactsh \
+  -disable-update-check \
+  "$@" >"$LOG" 2>&1
+CODE=$?
+set -e
+
+# nuclei journalise « Templates loaded for current scan: N ». Si la ligne
+# manque, on ne sait pas ce qui a tourné — et « je ne sais pas » doit se lire
+# comme un échec, jamais comme une absence de vulnérabilité. Un faux échec est
+# visible dans le rapport et se corrige ; un faux « propre » ne se voit pas.
+LOADED="$(sed -n 's/.*[Tt]emplates loaded for[a-z ]*scan: \([0-9][0-9]*\).*/\1/p' "$LOG" | tail -1)"
+
+if [ -z "$LOADED" ]; then
+  echo "run-nuclei: nuclei n'a pas déclaré de nombre de templates chargés" >&2
+  sed -n '1,40p' "$LOG" >&2
+  exit 65
+fi
+
+if [ "$LOADED" -eq 0 ]; then
+  echo "run-nuclei: 0 template chargé — l'analyse n'a rien sondé" >&2
+  sed -n '1,40p' "$LOG" >&2
+  exit 66
+fi
+
+echo "run-nuclei: $LOADED templates chargés" >&2
+
+# nuclei n'écrit pas le fichier de sortie quand il ne trouve rien : c'est un
+# résultat légitime, distinct de l'absence d'analyse déjà écartée ci-dessus.
+[ -f "$OUT" ] && cat "$OUT"
+
+exit "$CODE"
