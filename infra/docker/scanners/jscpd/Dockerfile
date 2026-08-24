@@ -13,7 +13,10 @@
 # Build:
 #   docker build -t auditer/jscpd:5.0.16-1 infra/docker/scanners/jscpd
 
-FROM node:22-alpine
+# Base pinned by digest, not by the moving `22-alpine` tag: it is the only
+# build input left that could change under a rebuild, and a scanner whose
+# runtime changes silently cannot back a reproducible report.
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32
 
 ARG JSCPD_VERSION=5.0.16
 RUN npm install -g --no-fund --no-audit "jscpd@${JSCPD_VERSION}" \

@@ -16,7 +16,12 @@ export class HadolintAdapter implements ScannerAdapter {
   readonly tool = "hadolint";
   readonly isolationTier = "gvisor" as const;
   readonly needsNetwork = false;
-  readonly image = "hadolint/hadolint:2.12.0";
+  // hadolint 2.12.0 — pinned by digest; the SARIF this image emits carries
+  // tool.driver.version 2.12.0, which is how the pin was checked against the tag
+  // rather than merely trusted. Not cosign-signed (see
+  // infra/docker/scanners/README.md).
+  readonly image =
+    "hadolint/hadolint@sha256:30a8fd2e785ab6176eed53f74769e04f125afb2f74a6c52aef7d463583b6d45e";
 
   appliesTo(ctx: ScanContext): boolean {
     return (ctx.manifests ?? []).includes("Dockerfile");

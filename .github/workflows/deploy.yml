@@ -90,8 +90,8 @@ jobs:
                aquasec/trivy:0.58.0 \
                hadolint/hadolint:2.12.0 \
                ghcr.io/boyter/scc:v3.4.0 \
-               projectdiscovery/nuclei:v3.3.7 \
-               femtopixel/google-lighthouse:8.6.0; do
+               projectdiscovery/nuclei:v3.3.8 \
+               femtopixel/google-lighthouse:v8.6.0; do
                docker image inspect \"\$img\" >/dev/null 2>&1 || docker pull -q \"\$img\"
              done"
 

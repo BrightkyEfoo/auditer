@@ -31,7 +31,16 @@ export class SemgrepAdapter implements ScannerAdapter {
   readonly needsNetwork = false;
   // Built by infra/docker/scanners/semgrep, not pulled from a registry: the
   // rules live inside it. Built on the deploy host, so the worker resolves it
-  // from the local daemon. TODO(infra): pin @sha256 once pushed to a registry.
+  // from the local daemon.
+  //
+  // Deliberately NOT digest-pinned, unlike every third-party scanner image. A
+  // digest identifies a manifest in a registry; this image was never pushed to
+  // one, and the id a local `docker build` produces is host-specific — pinning
+  // it here would name something that exists on exactly one machine and would
+  // break the moment the image is rebuilt. Its reproducibility comes from the
+  // build inputs instead (see the Dockerfile: pinned semgrep version, pinned
+  // sast-rules commit). TODO(infra): push to a registry, then pin @sha256 here
+  // like the others.
   readonly image = "auditer/semgrep-rules:1.99.0-2";
 
   appliesTo(_ctx: ScanContext): boolean {

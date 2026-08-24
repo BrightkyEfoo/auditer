@@ -18,7 +18,14 @@ export class TrivyConfigAdapter implements ScannerAdapter {
   readonly tool = "trivy-config";
   readonly isolationTier = "gvisor" as const;
   readonly needsNetwork = false;
-  readonly image = "aquasec/trivy:0.58.0";
+  // trivy 0.58.0 — pinned by digest. The misconfig policy bundle is baked INTO
+  // the image, so the image reference is also the ruleset reference: a moved tag
+  // would change which findings a repo produces without any repo change.
+  // Cosign-signed (keyless, GitHub Actions OIDC, subject
+  // github.com/aquasecurity/trivy/.github/workflows/reusable-release.yaml@refs/tags/v0.58.0)
+  // and verified at pin time — see infra/docker/scanners/README.md.
+  readonly image =
+    "aquasec/trivy@sha256:b88012e2a0a309d6a8a00463d4e63e5e513377fb74eccbc8f9b0f8f81940ebeb";
 
   appliesTo(ctx: ScanContext): boolean {
     // Run when the repo plausibly has IaC/config to check.

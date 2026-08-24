@@ -38,8 +38,20 @@ export class NucleiAdapter implements ScannerAdapter {
   readonly tool = "nuclei";
   readonly isolationTier = "gvisor" as const;
   readonly needsNetwork = true;
-  // TODO(infra): pin @sha256; bake a reviewed, pinned nuclei-templates version.
-  readonly image = "projectdiscovery/nuclei:v3.3.7";
+  // nuclei v3.3.8 — pinned by digest.
+  //
+  // This adapter used to name `v3.3.7`, a tag that was NEVER PUBLISHED: upstream
+  // cut a v3.3.7 GitHub release but pushed no container for it (Docker Hub goes
+  // v3.3.6 → v3.3.8). Every DAST run would have died on an unresolvable pull —
+  // the kind of break a moving tag hides and a digest cannot. v3.3.8 is the next
+  // patch that actually exists. Not cosign-signed (see
+  // infra/docker/scanners/README.md).
+  //
+  // TODO(infra): the template corpus is still whatever the image shipped with;
+  // bake a reviewed, pinned nuclei-templates version so template drift cannot
+  // move DAST verdicts either.
+  readonly image =
+    "projectdiscovery/nuclei@sha256:3c37049ecfd2d3230add2e7308249f694bcb43cfe243d090d6046cd6c35ff855";
 
   appliesTo(ctx: ScanContext): boolean {
     return Boolean(ctx.target?.url);

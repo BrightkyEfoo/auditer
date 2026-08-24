@@ -66,9 +66,13 @@ export class SccAdapter implements ScannerAdapter {
   readonly tool = "scc";
   readonly isolationTier = "gvisor" as const;
   readonly needsNetwork = false;
-  // TODO(infra): replace tag with cosign-verified @sha256 digest.
-  // sha256:537c0a10cf21cdbefb8b1e644e3cef9a736bdc0ca11ee8deee2dc31e5b8ed7a3
-  readonly image = "ghcr.io/boyter/scc:v3.4.0";
+  // scc v3.4.0 — pinned by digest: the kLOC this produces is a scoring
+  // denominator, so a changed counter silently rescales every density-normalized
+  // score. Cosign-signed (keyless, GitHub Actions OIDC, subject
+  // github.com/boyter/scc/.github/workflows/docker-publish.yml@refs/tags/v3.4.0)
+  // and verified at pin time — see infra/docker/scanners/README.md.
+  readonly image =
+    "ghcr.io/boyter/scc@sha256:537c0a10cf21cdbefb8b1e644e3cef9a736bdc0ca11ee8deee2dc31e5b8ed7a3";
 
   appliesTo(ctx: ScanContext): boolean {
     // Counting needs a checkout. DAST/UX runs carry a verified URL and no

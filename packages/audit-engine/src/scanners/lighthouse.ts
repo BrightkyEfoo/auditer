@@ -31,7 +31,16 @@ export class LighthouseAdapter implements ScannerAdapter {
   readonly tool = "lighthouse";
   readonly isolationTier = "gvisor" as const;
   readonly needsNetwork = true;
-  readonly image = "femtopixel/google-lighthouse:8.6.0";
+  // google-lighthouse v8.6.0 — pinned by digest.
+  //
+  // The previous reference was `8.6.0`, which does not exist: this publisher
+  // tags with a leading `v` (`v8.6.0`), so every UX run would have failed to
+  // pull. Same intended version, real tag, now pinned. amd64-only image (single
+  // manifest, no manifest list) — fine on the amd64 deploy host, but it will not
+  // run on an arm64 one. Not cosign-signed (see
+  // infra/docker/scanners/README.md).
+  readonly image =
+    "femtopixel/google-lighthouse@sha256:609559dac4184c63bcddaa7e109f3865c4eb44f46a3eb91eeaf22a09598eccdc";
 
   appliesTo(ctx: ScanContext): boolean {
     return Boolean(ctx.target?.url);

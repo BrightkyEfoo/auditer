@@ -66,8 +66,12 @@ export class OsvScannerAdapter implements ScannerAdapter {
   readonly tool = "osv-scanner";
   readonly isolationTier = "gvisor" as const;
   readonly needsNetwork = false; // offline DB mounted read-only
-  // TODO(infra): pin to a cosign-verified @sha256 digest.
-  readonly image = "ghcr.io/google/osv-scanner:v1.9.2";
+  // osv-scanner v1.9.2 — pinned by digest. The matcher version decides which
+  // ranges a package version falls into, so a silently-repointed tag would move
+  // CVE verdicts on an unchanged lockfile. Not cosign-signed — Google publishes
+  // no signature for this image (see infra/docker/scanners/README.md).
+  readonly image =
+    "ghcr.io/google/osv-scanner@sha256:239d47ec1a70af430c3cd57524d18e8b2d2dc2f28869384217b64f409ab6650a";
 
   appliesTo(ctx: ScanContext): boolean {
     // Relevance gate: only run if a supported manifest is present.

@@ -11,9 +11,6 @@ import { withFingerprints } from "../normalize/fingerprint.js";
  *
  * Gitleaks emits SARIF, but its secret-specific fields (entropy, commit, masked
  * match) are richer in its native JSON report — so we parse native JSON here.
- *
- * Image is digest-pinned; the digest below is a placeholder to be replaced with
- * a cosign-verified pin at infra time.
  */
 
 // gitleaks native JSON report entry (subset)
@@ -40,8 +37,13 @@ export class GitleaksAdapter implements ScannerAdapter {
   readonly tool = "gitleaks";
   readonly isolationTier = "gvisor" as const;
   readonly needsNetwork = false;
-  // TODO(infra): replace tag with cosign-verified @sha256 digest.
-  readonly image = "ghcr.io/gitleaks/gitleaks:v8.21.2";
+  // gitleaks v8.21.2 — pinned by digest so the binary that produced a report
+  // cannot change under a rebuild. `v8.21.2` is a mutable pointer: upstream can
+  // repoint it at any time, and two scans of the same commit would then disagree
+  // for reasons that have nothing to do with the commit. Not cosign-signed —
+  // gitleaks publishes no signature (see infra/docker/scanners/README.md).
+  readonly image =
+    "ghcr.io/gitleaks/gitleaks@sha256:0e99e8821643ea5b235718642b93bb32486af9c8162c8b8731f7cbdc951a7f46";
 
   appliesTo(_ctx: ScanContext): boolean {
     // Every git repo is in scope for secret scanning.
