@@ -49,6 +49,7 @@ export class EventPublisher {
     tool: string,
     status: ScanStatus,
     findingCount?: number,
+    detail?: { durationMs?: number; exitCode?: number; image?: string; reason?: string },
   ): Promise<void> {
     return this.publish(auditRunId, {
       type: "scan",
@@ -57,6 +58,7 @@ export class EventPublisher {
       tool,
       status,
       findingCount,
+      ...detail,
       at: new Date().toISOString(),
     });
   }

@@ -30,6 +30,7 @@ import {
 } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { Deliverables } from "@/components/app/deliverables";
+import { RunTrace, type TraceEntry } from "@/components/app/run-trace";
 
 const STEPS = ["queued", "cloning", "scanning", "analyzing", "reporting", "done"] as const;
 const TERMINAL = new Set(["done", "completed_with_errors", "failed", "canceled"]);
@@ -38,7 +39,7 @@ const TRIAGE_OPTIONS = ["open", "false_positive", "ignored", "accepted"];
 export function RunView({ runId }: { runId: string }) {
   const [run, setRun] = useState<AuditRun | null>(null);
   const [status, setStatus] = useState("queued");
-  const [logs, setLogs] = useState<string[]>([]);
+  const [trace, setTrace] = useState<TraceEntry[]>([]);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [sevFilter, setSevFilter] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -62,17 +63,32 @@ export function RunView({ runId }: { runId: string }) {
 
     const es = new EventSource(eventsUrl(runId));
     es.addEventListener("status", (e) => {
-      setStatus(JSON.parse((e as MessageEvent).data).status);
-    });
-    es.addEventListener("scan", (e) => {
       const d = JSON.parse((e as MessageEvent).data);
-      setLogs((l) => [
-        ...l,
-        `${d.tool} — ${d.status}${d.findingCount != null ? ` (${d.findingCount})` : ""}`,
+      setStatus(d.status);
+      setTrace((t) => [
+        ...t,
+        { kind: "phase", at: d.at, message: STATUS_FR[d.status] ?? d.status },
       ]);
     });
+    es.addEventListener("scan", (e) => {
+      const d = JSON.parse((e as MessageEvent).data) as TraceEntry & { at: string };
+      setTrace((t) => {
+        // A terminal event REPLACES its own "running" row instead of stacking
+        // on top of it: the trace should read as a list of engines with their
+        // outcome, not as two lines per engine that the reader has to pair up.
+        const idx = t.findIndex(
+          (x) => x.kind === "scan" && x.tool === d.tool && x.status === "running",
+        );
+        const row: TraceEntry = { ...d, kind: "scan" };
+        if (d.status === "running" || idx < 0) return [...t, row];
+        const next = [...t];
+        next[idx] = row;
+        return next;
+      });
+    });
     es.addEventListener("log", (e) => {
-      setLogs((l) => [...l, JSON.parse((e as MessageEvent).data).message]);
+      const d = JSON.parse((e as MessageEvent).data);
+      setTrace((t) => [...t, { kind: "note", at: d.at, message: d.message }]);
     });
     es.addEventListener("done", (e) => {
       setStatus(JSON.parse((e as MessageEvent).data).status);
@@ -172,16 +188,9 @@ export function RunView({ runId }: { runId: string }) {
           )}
         </ol>
 
-        {logs.length > 0 && running && (
-          <div className="mt-6 max-h-40 overflow-auto border border-line bg-void p-4">
-            {logs.map((l, i) => (
-              <p key={i} className="font-mono text-label text-ash">
-                <span className="text-line-bright">{String(i + 1).padStart(3, "0")} </span>
-                {l}
-              </p>
-            ))}
-          </div>
-        )}
+        {/* Kept after the run ends, not only while it is live: the trace is how
+            anyone answers "why did this pillar find nothing" afterwards. */}
+        <RunTrace entries={trace} />
       </section>
 
       {/* ── Score ──────────────────────────────────────────────────────── */}

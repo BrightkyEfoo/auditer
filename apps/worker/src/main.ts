@@ -185,7 +185,12 @@ async function processAudit(job: AuditJob): Promise<void> {
         await finalize(auditRunId, organizationId, "canceled");
         return;
       }
-      await publisher.scan(auditRunId, adapter.pillar, adapter.tool, "running");
+      const startedAt = Date.now();
+      await publisher.scan(auditRunId, adapter.pillar, adapter.tool, "running", undefined, {
+        // The exact image, digest included. Two runs of the same commit are
+        // only comparable if you can see they ran the same binary.
+        image: adapter.image,
+      });
 
       let result: RunScanResult;
       try {
@@ -198,7 +203,11 @@ async function processAudit(job: AuditJob): Promise<void> {
           exitClass: "fail",
           error: { message: String(err) },
         });
-        await publisher.scan(auditRunId, adapter.pillar, adapter.tool, "failed");
+        await publisher.scan(auditRunId, adapter.pillar, adapter.tool, "failed", 0, {
+          durationMs: Date.now() - startedAt,
+          image: adapter.image,
+          reason: String(err).slice(0, 200),
+        });
         continue;
       }
 
@@ -226,17 +235,47 @@ async function processAudit(job: AuditJob): Promise<void> {
         allRaw.push(f);
         if (!fpToScanId.has(f.fingerprint)) fpToScanId.set(f.fingerprint, scanId);
       }
+      // Report the state that was PERSISTED. This used to announce "success"
+      // whenever the scanner had merely been reached, so a run whose engine was
+      // killed showed a green line live and a failed scan in the report — the
+      // customer and the record disagreed about the same event.
+      const liveStatus = result.skipped
+        ? ("skipped" as const)
+        : result.exitClass === "fail"
+          ? ("failed" as const)
+          : result.exitClass === "partial"
+            ? ("partial" as const)
+            : ("success" as const);
       await publisher.scan(
         auditRunId,
         adapter.pillar,
         adapter.tool,
-        result.skipped ? "skipped" : "success",
+        liveStatus,
         result.findings.length,
+        {
+          durationMs: result.durationMs,
+          exitCode: result.exitCode,
+          image: adapter.image,
+          reason: result.skipped
+            ? "aucun fichier pertinent pour ce moteur"
+            : result.timedOut
+              ? "délai dépassé"
+              : result.exitCode === 137
+                ? "tué par la limite mémoire (SIGKILL)"
+                : undefined,
+        },
       );
     }
 
     await setStatus(auditRunId, organizationId, "analyzing");
     await publisher.status(auditRunId, "analyzing");
+    await publisher.log(
+      auditRunId,
+      `${allRaw.length} finding(s) bruts sur ${pillarsRun.size} pilier(s) exécuté(s)` +
+        (partialPillars.size > 0
+          ? ` — ${partialPillars.size} pilier(s) incomplet(s) : ${[...partialPillars].join(", ")}`
+          : ""),
+    );
 
     // Load persisted triage so scoring respects false-positives across runs.
     const triage = await loadTriage(organizationId);
@@ -263,6 +302,26 @@ async function processAudit(job: AuditJob): Promise<void> {
       onWarning: (m) => void publisher.log(auditRunId, `vuln feeds: ${m}`),
     });
 
+    const enriched = agg.findings.filter((f) => f.vuln?.epssScore != null).length;
+    const kev = agg.findings.filter((f) => f.vuln?.kevListed).length;
+    await publisher.log(
+      auditRunId,
+      `déduplication : ${allRaw.length} bruts → ${agg.findings.length} retenus` +
+        (allRaw.length > agg.findings.length
+          ? ` (${allRaw.length - agg.findings.length} regroupés entre moteurs)`
+          : ""),
+    );
+    await publisher.log(
+      auditRunId,
+      agg.vulnFeedsSnapshot
+        ? `exploitabilité : ${enriched} finding(s) notés EPSS, ${kev} exploité(s) dans la nature — instantané ${agg.vulnFeedsSnapshot}`
+        : "exploitabilité : aucune donnée EPSS/KEV disponible — classement par gravité seule",
+    );
+    await publisher.log(
+      auditRunId,
+      `score ${agg.score.overall}/100 (${agg.score.grade}) · ` +
+        agg.score.pillars.map((p) => `${p.pillar} ${p.score}`).join(" · "),
+    );
     await publisher.log(
       auditRunId,
       agg.score.klocSource === "measured"
