@@ -39,6 +39,29 @@ export class LighthouseAdapter implements ScannerAdapter {
   // manifest, no manifest list) — fine on the amd64 deploy host, but it will not
   // run on an arm64 one. Not cosign-signed (see
   // infra/docker/scanners/README.md).
+  //
+  // NOT YET RUN END-TO-END, and the reasons to replace it are stacking up:
+  //
+  // - `femtopixel` is an unaffiliated republisher, and this is the container we
+  //   point at attacker-influenced URLs with a real Chromium inside it.
+  // - v8.6.0 is Lighthouse from 2021. The audit set and the category weights
+  //   have moved several times since, so the UX score is graded on a five-year-
+  //   old rubric. v12.8.2 and v13.4.1 exist from the same publisher
+  //   (sha256:0bb2f195e9c5d67ac3f85cc7442b7116ac5bcf00420f3d946867e1cb03a9500e
+  //   and sha256:0f63031459c181ec63f56c9aa1adfc49cb1dce4acf5651b511929bffbdc4df13),
+  //   both still amd64-only; neither is verified against this adapter yet.
+  // - Its ENTRYPOINT is a shell script, not `lighthouse`. When argv[0] starts
+  //   with `http` it rewrites the command to
+  //   `lighthouse --enable-error-reporting --chrome-flags="$CHROME_FLAGS" "$@"`.
+  //   So `--chrome-flags` below is passed TWICE (ours wins, being last) and
+  //   `--enable-error-reporting` is injected on every run — error telemetry we
+  //   never asked for, which only fails quietly because egress is proxy-scoped
+  //   to the audited host. It also means a target URL WITHOUT a scheme would be
+  //   exec'd as a command instead of scanned.
+  //
+  // TODO(infra): build this on our own Chromium base like the PDF renderer
+  // (infra/docker/scanners/chromium) with a pinned `lighthouse` npm version —
+  // same pattern as auditer/jscpd — and drop the third-party republisher.
   readonly image =
     "femtopixel/google-lighthouse@sha256:609559dac4184c63bcddaa7e109f3865c4eb44f46a3eb91eeaf22a09598eccdc";
 

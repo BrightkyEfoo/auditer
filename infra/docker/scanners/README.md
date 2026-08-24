@@ -25,7 +25,7 @@ version is running.
 | quality  | `scc`           | `ghcr.io/boyter/scc` v3.4.0 | `sha256:537c0a10cf21cdbefb8b1e644e3cef9a736bdc0ca11ee8deee2dc31e5b8ed7a3` | **signed, verified** | MIT |
 | hygiene  | `trivy-config`  | `aquasec/trivy` 0.58.0 | `sha256:b88012e2a0a309d6a8a00463d4e63e5e513377fb74eccbc8f9b0f8f81940ebeb` | **signed, verified** | Apache-2.0 |
 | hygiene  | `hadolint`      | `hadolint/hadolint` 2.12.0 | `sha256:30a8fd2e785ab6176eed53f74769e04f125afb2f74a6c52aef7d463583b6d45e` | none published | GPL-3.0 (separate container, never linked) |
-| dast     | `nuclei`        | `projectdiscovery/nuclei` v3.3.8 | `sha256:3c37049ecfd2d3230add2e7308249f694bcb43cfe243d090d6046cd6c35ff855` | none published | MIT |
+| dast     | `nuclei`        | `projectdiscovery/nuclei` v3.4.10 | `sha256:aeb5ea2db32a252b8135707d2ad0e89b90e19a18ea7816d38759bc51efb46b97` | none published | MIT |
 | ux       | `lighthouse`    | `femtopixel/google-lighthouse` v8.6.0 | `sha256:609559dac4184c63bcddaa7e109f3865c4eb44f46a3eb91eeaf22a09598eccdc` | none published | Apache-2.0 (Lighthouse) |
 
 Two references in that table were not merely unpinned, they were **unpullable**,
@@ -33,10 +33,47 @@ and pinning is what surfaced it:
 
 - `nuclei` named `v3.3.7`. Upstream cut a v3.3.7 GitHub release but never pushed
   a container for it — Docker Hub goes `v3.3.6` → `v3.3.8`. Every DAST run would
-  have died at pull time. Now `v3.3.8`, the next patch that exists.
+  have died at pull time. Now `v3.4.10`, the newest v3.4 patch, confirmed
+  pullable on the x86_64 deploy host.
 - `lighthouse` named `8.6.0`. That publisher tags with a leading `v`, so the real
   tag is `v8.6.0` and `8.6.0` resolves to nothing. Same intended version, real
   tag, pinned.
+
+## A pinned image is not a working scanner
+
+Pinning forced every adapter's argv to be run rather than read, and two of them
+did not survive it. Both failed in the direction that hides: a pillar that
+reports **clean** instead of reporting an error.
+
+- **`trivy-config` could never run.** It passed `--skip-db-update`, which is not
+  a flag of `trivy config` (it belongs to the vulnerability scanner). trivy
+  0.58.0 exits FATAL `unknown flag`. The offline switch is `--skip-check-update`.
+- **`trivy-config` also wrote its report to a file.** `--output /scratch/trivy.sarif`
+  put the SARIF in the scratch tmpfs while `parse` reads `result.stdout`, so even
+  a run that executed would have been discarded with the container. Same defect
+  that was found in jscpd. Fixed by dropping `--output`: trivy writes SARIF to
+  stdout, the only channel the runner keeps.
+- **`osv-scanner` passed a flag that does not exist**, `--experimental-local-db-path`.
+  osv-scanner 1.9.2 ignores it silently rather than rejecting it, so it read like
+  the DB location was pinned when the only thing pointing the scanner at the
+  mounted DB is `OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY`. Removed. (Verified with
+  no DB mounted it exits 127, which `classifyExit` maps to `fail` — a missing DB
+  is loud, not a silent zero-vulnerability report.)
+
+**`nuclei` is the one still open, and it is the worst of the three.** Upstream's
+Dockerfile (checked at v3.4.10) installs only the nuclei binary on top of alpine
+— **no template corpus**. nuclei fetches nuclei-templates from GitHub on first
+run, which this sandbox forbids twice: egress is proxy-scoped to the audited host
+alone, and the container runs as 65534 with no writable HOME. A run with zero
+templates probes nothing, prints nothing and **exits 0**, so `classifyExit`
+records success and the DAST pillar reads clean on a scan that never happened. A
+stdout heuristic cannot patch this — `-silent` suppresses the template count. The
+fix is to bake a reviewed, pinned nuclei-templates corpus into an image we build
+(the `auditer/semgrep-rules` pattern) and pass `-templates`.
+
+So when bumping or adding a scanner, **run the adapter's exact argv against the
+pinned image** and confirm the report lands on stdout. `pnpm build` proves
+nothing about either.
 
 `femtopixel/google-lighthouse:v8.6.0` is a **single amd64 manifest** (no manifest
 list). It runs on the amd64 deploy host and will not run on an arm64 one. The six
@@ -150,26 +187,23 @@ and proves only that the image was signed, not by whom.
 ## The deploy pre-pull list must be bumped in lockstep
 
 `.github/workflows/deploy.yml` ("Pull third-party scanner images") warms the
-host's image set **by tag**, because the docker-socket-proxy may create
-containers but not pull: an image missing from the host fails one pillar and
-still lets the run report success, with a hole in its coverage.
+host's image set, because the docker-socket-proxy may create containers but not
+pull: an image missing from the host fails one pillar and still lets the run
+report success, with a hole in its coverage.
 
-Pulling by tag does satisfy a digest-pinned adapter, as long as the tag still
-resolves to the pinned digest — `docker pull repo:tag` records the manifest
-digest as a `RepoDigest`, and `docker run repo@sha256:<that digest>` then starts
-the local image with no network. So the two lists are not redundant, they are
-**coupled**: if the publisher repoints the tag, the pre-pull fetches an image
-whose digest no longer matches, the adapter's reference is not satisfied, and the
-pillar fails loudly. That is the intended failure — a scan that silently used a
-different binary would be worse.
+That list is now **by digest**, matching the adapters exactly. It used to name
+tags, including the two that never existed (`projectdiscovery/nuclei:v3.3.7`,
+`femtopixel/google-lighthouse:8.6.0`) — and with `set -e` on that loop, a
+`docker pull` on either one failed the whole deploy step.
 
-Consequence: the tag list in the workflow must be updated in the same change as
-the digest in the adapter, or the deploy warms the wrong image. The workflow's
-list currently still names the two references that never existed
-(`projectdiscovery/nuclei:v3.3.7`, `femtopixel/google-lighthouse:8.6.0`); with
-`set -e` on that loop, `docker pull` on either one fails the deploy step. They
-must become `v3.3.8` and `v8.6.0` — this file's changes did not touch
-`.github/`.
+Tags there were the wrong shape even once corrected. A tag warms whatever the
+publisher currently points it at; if that is no longer the pinned digest, the
+host looks fully provisioned while every scan fails on "no such image". Digest on
+both sides means the step either fetches exactly what the adapters ask for, or
+fails at deploy time where someone is watching.
+
+**Update both in the same change.** The digest in the adapter and the digest in
+the workflow are one fact written twice.
 
 ## Offline vuln DB (osv-scanner)
 

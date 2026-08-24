@@ -35,13 +35,25 @@ export class TrivyConfigAdapter implements ScannerAdapter {
   buildSpec(_ctx: ScanContext): SandboxSpec {
     return {
       image: this.image,
+      // Two defects lived in this argv, and both made the hygiene pillar report
+      // clean rather than report a failure:
+      //
+      // 1. `--skip-db-update` is not a flag of `trivy config` (it belongs to the
+      //    vulnerability scanner). trivy 0.58.0 exits FATAL "unknown flag", so
+      //    the scan never ran. The offline switch for the misconfig checks is
+      //    `--skip-check-update`, which keeps trivy on the rego bundle baked
+      //    into the image instead of pulling `mirror.gcr.io/aquasec/trivy-checks`
+      //    — mandatory here, since this sandbox has no network at all.
+      // 2. `--output <file>` wrote the SARIF into the scratch tmpfs while
+      //    `parse` reads `result.stdout`. The report was thrown away with the
+      //    container even on the runs that did execute. No `--output`: trivy
+      //    writes SARIF to stdout, which is the only channel the runner keeps.
       cmd: [
         "config",
         "--format",
         "sarif",
-        "--output",
-        `${CONTAINER_SCRATCH_PATH}/trivy.sarif`,
-        "--skip-db-update",
+        "--skip-check-update",
+        "--quiet", // keep the progress bar out of the stdout we parse
         CONTAINER_REPO_PATH,
       ],
       workdir: CONTAINER_REPO_PATH,
