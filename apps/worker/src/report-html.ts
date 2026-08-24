@@ -41,15 +41,29 @@ interface FindingRow {
   location?: string | null;
 }
 
-/** One scanner's outcome. `skipped` is information, not absence. */
+/**
+ * One scanner's outcome. `status` is a plain string rather than a union: it
+ * comes straight from the persisted scan row, and a report that silently
+ * dropped an unrecognised state would hide the very gap it exists to show.
+ */
 export interface ScannerRow {
   tool: string;
   pillar: string;
   version?: string | null;
   imageRef?: string | null;
-  status?: "success" | "partial" | "failed" | "skipped" | null;
+  status?: string | null;
   findingCount?: number | null;
-  reason?: string | null;
+  /** Raw error blob from the scan row; only its message is rendered. */
+  error?: unknown;
+}
+
+const FAILED_STATES = new Set(["failed", "partial"]);
+
+/** Pulls a readable reason out of the persisted error blob, if there is one. */
+function errorReason(e: unknown): string | null {
+  if (!e || typeof e !== "object") return null;
+  const m = (e as { message?: unknown }).message;
+  return typeof m === "string" && m.length > 0 ? m.slice(0, 200) : null;
 }
 
 interface ReportInput {
@@ -191,7 +205,7 @@ export function buildReportHtml(r: ReportInput): string {
   const ranPillars = new Set(r.scanners.filter((s) => s.status !== "skipped").map((s) => s.pillar));
   const requested = r.requestedPillars ?? [...new Set(r.scanners.map((s) => s.pillar))];
   const notRun = requested.filter((p) => !ranPillars.has(p));
-  const failed = r.scanners.filter((s) => s.status === "failed" || s.status === "partial");
+  const failed = r.scanners.filter((s) => FAILED_STATES.has(s.status ?? ""));
 
   const bar = counts
     .filter((c) => c.n > 0)
@@ -314,7 +328,7 @@ ${requested
                 (t) =>
                   `<span class="mono">${esc(t.tool)}${t.version ? ` ${esc(t.version)}` : ""}</span> — ${esc(
                     t.status ?? "état inconnu",
-                  )}${t.reason ? ` (${esc(t.reason)})` : ""}`,
+                  )}${errorReason(t.error) ? ` (${esc(errorReason(t.error)!)})` : ""}`,
               )
               .join(" · ")
           : "aucun moteur exécuté"
