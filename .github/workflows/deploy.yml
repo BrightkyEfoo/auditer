@@ -46,6 +46,7 @@ jobs:
           WEB_URL=${{ vars.WEB_URL }}
           WS_DIR=${{ vars.WS_DIR }}
           OSV_DB_DIR=${{ vars.OSV_DB_DIR }}
+          VULN_FEEDS_DIR=${{ vars.VULN_FEEDS_DIR }}
           SANDBOX_RUNTIME=${{ vars.SANDBOX_RUNTIME }}
           AUTH_DEV_HEADERS=${{ vars.AUTH_DEV_HEADERS }}
           BETTER_AUTH_SECRET=${{ secrets.BETTER_AUTH_SECRET }}
@@ -71,11 +72,25 @@ jobs:
             "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
             "cd ${{ vars.DEPLOY_PATH }} && docker build -t auditer/semgrep-rules:1.99.0-2 infra/docker/scanners/semgrep"
 
-      - name: Build + up
+      - name: Build app image
+        # Build BEFORE the schema bootstrap, start AFTER it. Starting the app
+        # first would leave the worker briefly running code that expects columns
+        # the database does not have yet — the exact window in which a queued job
+        # crashes on a missing column.
         run: |
           ssh -p "${{ vars.DEPLOY_PORT || '22' }}" \
             "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
-            "cd ${{ vars.DEPLOY_PATH }} && docker compose -p auditer --env-file .env -f infra/compose/docker-compose.server.yml up -d --build"
+            "cd ${{ vars.DEPLOY_PATH }} && docker compose -p auditer --env-file .env -f infra/compose/docker-compose.server.yml build"
+
+      - name: Refresh vulnerability feeds (non-fatal)
+        # EPSS republishes daily and KEV several times a week, so a refresh per
+        # deploy keeps the snapshot fresh without a cron. `|| true` is deliberate:
+        # a feed that is briefly unreachable must not block shipping code, and
+        # the pipeline already degrades to unenriched findings with a warning.
+        run: |
+          ssh -p "${{ vars.DEPLOY_PORT || '22' }}" \
+            "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
+            "cd ${{ vars.DEPLOY_PATH }} && docker compose -p auditer --env-file .env -f infra/compose/docker-compose.server.yml --profile ops run --rm -T vuln-feeds-refresh || true"
 
       - name: DB bootstrap (idempotent)
         run: |
@@ -85,3 +100,9 @@ jobs:
               DB=postgresql://auditer:auditer@postgres:5432/auditer;
               DATABASE_URL=\$DB node_modules/.bin/prisma db push --skip-generate --accept-data-loss;
               psql \$DB -v ON_ERROR_STOP=1 -f prisma/sql/rls.sql'"
+
+      - name: Start services
+        run: |
+          ssh -p "${{ vars.DEPLOY_PORT || '22' }}" \
+            "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
+            "cd ${{ vars.DEPLOY_PATH }} && docker compose -p auditer --env-file .env -f infra/compose/docker-compose.server.yml up -d"

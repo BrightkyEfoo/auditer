@@ -122,6 +122,17 @@ services:
       # the CI env file must never open the api. The guard also refuses it
       # outright when NODE_ENV=production, so this line is the second lock.
       AUTH_DEV_HEADERS: "${AUTH_DEV_HEADERS:-0}"
+      # Host dir holding the offline EPSS + CISA-KEV snapshot, refreshed out of
+      # band by infra/scripts/refresh-vuln-feeds.sh. Same absolute path in and
+      # out (like WORKSPACE_ROOT) so one variable names it everywhere.
+      #
+      # Unlike OSV_DB_HOST_PATH below — which the worker only PASSES to scanner
+      # containers — the api/worker process reads these files itself, so the
+      # directory is really bind-mounted into both, read-only. Enrichment is a
+      # control-plane step: scanner sandboxes have no network and never see it.
+      VULN_FEEDS_HOST_PATH: "${VULN_FEEDS_DIR:-/home/brightky/auditer-vuln-feeds}"
+    volumes:
+      - "${VULN_FEEDS_DIR:-/home/brightky/auditer-vuln-feeds}:${VULN_FEEDS_DIR:-/home/brightky/auditer-vuln-feeds}:ro"
     ports: ["127.0.0.1:3301:3001"]
 
   worker:
@@ -146,6 +157,32 @@ services:
       # SAME absolute path in and out, so host-spawned scanner containers can
       # bind-mount the cloned repo.
       - "${WS_DIR:-/home/brightky/auditer-workspaces}:${WS_DIR:-/home/brightky/auditer-workspaces}"
+      # EPSS/KEV snapshot, read-only: the worker enriches findings after dedup.
+      - "${VULN_FEEDS_DIR:-/home/brightky/auditer-vuln-feeds}:${VULN_FEEDS_DIR:-/home/brightky/auditer-vuln-feeds}:ro"
+
+  # One-shot job, never started by `up`: downloads the EPSS + CISA-KEV snapshot
+  # the enrichment step reads. It exists as a service because the deploy host
+  # has neither pnpm nor a built dist/ — everything runs in containers — and
+  # because it needs the feeds directory READ-WRITE, which api and worker
+  # deliberately do not get.
+  #
+  #   docker compose --profile ops run --rm vuln-feeds-refresh
+  #
+  # A failure here must never fail a deploy: the enrichment degrades to
+  # unenriched findings with a warning in the run log, which is a worse report
+  # but a working one.
+  vuln-feeds-refresh:
+    <<: *app-image
+    profiles: ["ops"]
+    command:
+      - node
+      - packages/audit-engine/dist/enrich/refresh-feeds.js
+      - "--dir=${VULN_FEEDS_DIR:-/home/brightky/auditer-vuln-feeds}"
+    environment:
+      NODE_ENV: production
+      VULN_FEEDS_HOST_PATH: "${VULN_FEEDS_DIR:-/home/brightky/auditer-vuln-feeds}"
+    volumes:
+      - "${VULN_FEEDS_DIR:-/home/brightky/auditer-vuln-feeds}:${VULN_FEEDS_DIR:-/home/brightky/auditer-vuln-feeds}"
 
   web:
     <<: *app-image
