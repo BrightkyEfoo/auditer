@@ -70,14 +70,13 @@ export function Pillars() {
           {PILLARS.map((p, i) => (
             <Reveal as="li" key={p.id} delay={i * 55}>
               <article className="group relative grid grid-cols-12 items-baseline gap-x-4 gap-y-3 border-b border-line py-8 transition-colors duration-[180ms] hover:bg-slate/60">
-                {/* The accent traces from the left on hover — the one hover
-                    gesture used across the whole system. */}
-                <span
-                  aria-hidden
-                  className="absolute inset-y-0 left-0 w-px origin-top scale-y-0 bg-acid transition-transform duration-300 ease-out group-hover:scale-y-100"
-                />
+                {/* Three properties, one gesture: the rail traces down, the
+                    index steps aside to let it through, and the ground lifts.
+                    Juries single out hover states far more often than scroll
+                    reveals — this is where the motion budget belongs. */}
+                <span aria-hidden className="row-mark" />
 
-                <span className="col-span-2 font-mono text-label text-acid sm:col-span-1">
+                <span className="idx-shift col-span-2 font-mono text-label text-acid sm:col-span-1">
                   [{p.index}]
                 </span>
 

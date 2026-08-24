@@ -107,7 +107,12 @@ export function SiteNav({ authenticated }: { authenticated: boolean }) {
 
       {/* Mobile menu: full screen, oversized type. The nav becomes a moment of
           art direction rather than a cramped drawer. */}
+      {/* `inert` is what actually removes it: pointer-events + opacity hide it
+          visually but leave every link in the tab order, so a keyboard user
+          tabs through an invisible menu. */}
       <div
+        inert={!open}
+        aria-hidden={!open}
         className={cn(
           "fixed inset-0 z-40 flex flex-col bg-carbon transition-opacity duration-300 md:hidden",
           open ? "opacity-100" : "pointer-events-none opacity-0",

@@ -65,14 +65,20 @@ export function Panel({
 
 /* ── Actions ────────────────────────────────────────────────────────────── */
 
+/** Wipe colour for the primary variant — set as a CSS var the pseudo reads. */
 const BTN_BASE =
   "inline-flex items-center justify-center gap-2 whitespace-nowrap border px-5 py-2.5 " +
   "font-mono text-label uppercase transition-colors duration-[180ms] ease-out " +
   "disabled:pointer-events-none disabled:opacity-35";
 
 const BTN_VARIANT = {
-  // Filled acid — one per screen, on the single most important action.
-  primary: "border-acid bg-acid text-void hover:bg-acid-dim hover:border-acid-dim",
+  // Filled acid — one per screen, on the single most important action. The
+  // hover WIPES a darker fill in from the left rather than cross-fading the
+  // background: a colour change says "state changed", a wipe says "the control
+  // answered you". Same 320ms, entirely different read.
+  primary:
+    "btn-wipe border-acid bg-acid text-void [--wipe:theme(colors.acid-dim)] " +
+    "hover:border-acid-dim",
   // Outline that inverts on hover. The default.
   ghost: "border-line-bright text-mineral hover:border-mineral hover:bg-mineral hover:text-void",
   // Text-weight action inside dense surfaces.

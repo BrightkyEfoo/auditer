@@ -1,7 +1,7 @@
 "use client";
 
 import { ButtonLink } from "@/components/ui";
-import { Parallax, Scramble, ScrollReadout } from "@/components/motion";
+import { Parallax, CountUp, LineReveal, ScrollReadout } from "@/components/motion";
 
 /**
  * Hero as a typographic poster with a real instrument readout beside it.
@@ -41,10 +41,19 @@ export function Hero() {
             <span>07 piliers</span>
           </p>
 
+          {/* Lines rise out of their own clipping box, 90ms apart. Split by
+              LINE and never by word or character: letter-splitting breaks
+              screen readers, machine translation, in-page find and copy-paste,
+              and engages WCAG 2.5.3 and 4.1.2. Each line here stays one intact
+              text node. */}
           <h1 className="display mt-7">
-            <span className="block">Votre code,</span>
-            <span className="block pl-[8%] text-ash">mis sous</span>
-            <span className="block text-acid">instrument.</span>
+            <LineReveal
+              lines={[
+                <span key="a">Votre code,</span>,
+                <span key="b" className="block pl-[8%] text-ash">mis sous</span>,
+                <span key="c" className="block text-acid">instrument.</span>,
+              ]}
+            />
           </h1>
 
           <p className="lede mt-9">
@@ -77,7 +86,7 @@ export function Hero() {
             <div className="ticked relative border border-line-bright bg-slate">
               {/* Scan sweep — the one ambient animation on the page. */}
               <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
-                <div className="h-px w-full animate-sweep-y bg-acid/25" />
+                <div className="h-px w-full bg-acid/25 [animation:sweep-y_3.2s_linear_3]" />
               </div>
 
               <header className="flex items-center justify-between border-b border-line px-5 py-3">
@@ -101,7 +110,7 @@ export function Hero() {
                   <span className="label text-mute">Score global</span>
                   <div className="mt-2 flex items-baseline gap-1.5">
                     <span className="font-display text-[3.5rem] font-bold leading-none tracking-tightest text-mineral">
-                      <Scramble text="58" />
+                      <CountUp to={58} />
                     </span>
                     <span className="font-mono text-data text-mute">/100</span>
                   </div>
@@ -115,11 +124,17 @@ export function Hero() {
               </div>
 
               <div className="space-y-2.5 border-t border-line px-5 py-5">
-                {BREAKDOWN.map((b) => (
+                {BREAKDOWN.map((b, i) => (
                   <div key={b.label} className="flex items-center gap-3">
                     <span className="label w-16 shrink-0 text-mute">{b.label}</span>
                     <span className="h-1.5 flex-1 bg-line">
-                      <span className={`block h-full ${b.cls}`} style={{ width: b.w }} />
+                      <span
+                        className={`block h-full origin-left ${b.cls}`}
+                        style={{
+                          width: b.w,
+                          animation: `bar-fill 700ms var(--ease-out) ${i * 90 + 300}ms both`,
+                        }}
+                      />
                     </span>
                     <span className="w-5 shrink-0 text-right font-mono text-data text-ash">{b.n}</span>
                   </div>

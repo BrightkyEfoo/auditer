@@ -180,6 +180,119 @@
 
   /* ── Interaction ──────────────────────────────────────────────────── */
 
+  /* ── Hover, treated as the primary surface ────────────────────────
+     Awwwards juries single out hover states far more often than scroll
+     reveals — three of the five elements they highlighted on Studio
+     Freight's Applause were pointer interactions. Everyone spends their
+     motion budget on entrances; almost nobody spends it on the cursor.
+     These are the gestures that fire while someone is actually reading. */
+
+  /* Primary action: the fill WIPES in from the left rather than cross-fading.
+     A colour transition says "state changed"; a wipe says "the control
+     responded". Same duration, entirely different read. */
+  .btn-wipe {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+  }
+  .btn-wipe::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    /* Not currentColor: on the primary button currentColor is the near-black
+       LABEL, so the wipe would paint black over acid. The variant sets --wipe. */
+    background: var(--wipe, currentColor);
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform 320ms var(--ease-out);
+  }
+  .btn-wipe:hover::before,
+  .btn-wipe:focus-visible::before {
+    transform: scaleX(1);
+  }
+
+  /* Row hover: the acid rail traces down while the row's ground lifts. Two
+     properties, one gesture — the rail gives direction, the ground gives
+     weight. */
+  .row-mark {
+    position: absolute;
+    inset-block: 0;
+    left: 0;
+    width: 1px;
+    background: theme("colors.acid");
+    transform: scaleY(0);
+    transform-origin: top;
+    transition: transform 420ms var(--ease-out);
+  }
+  .group:hover .row-mark,
+  .group:focus-visible .row-mark {
+    transform: scaleY(1);
+  }
+
+  /* The index number steps aside as the rail arrives. A 3px shift is enough
+     to register as an answer to the pointer without moving the layout. */
+  .idx-shift {
+    transition: transform 420ms var(--ease-out), color 200ms ease;
+  }
+  .group:hover .idx-shift {
+    transform: translateX(3px);
+  }
+
+  /* Arrow that leaves and re-enters from the other side — a directional
+     answer, not a nudge. Used on anything that navigates. */
+  .arrow-swap {
+    display: inline-block;
+    overflow: hidden;
+    position: relative;
+  }
+  .arrow-swap > span {
+    display: inline-block;
+    transition: transform 380ms var(--ease-out);
+  }
+  .arrow-swap > span:last-child {
+    position: absolute;
+    inset: 0;
+    transform: translateX(-120%);
+  }
+  .group:hover .arrow-swap > span:first-child {
+    transform: translateX(120%);
+  }
+  .group:hover .arrow-swap > span:last-child {
+    transform: translateX(0);
+  }
+
+  /* Severity bars grow from nothing on first paint. On an instrument panel a
+     bar that is simply THERE reads as a picture; one that fills reads as a
+     measurement being taken. */
+  @keyframes bar-fill {
+    from {
+      transform: scaleX(0);
+    }
+    to {
+      transform: scaleX(1);
+    }
+  }
+
+  /* ── Masked line reveal ───────────────────────────────────────────
+     Display lines rise out of their own clipping box instead of fading in.
+     The mask is what separates a considered reveal from `opacity: 0 → 1`;
+     the type appears to be set rather than to materialise. */
+  .line-mask {
+    display: block;
+    overflow: hidden;
+  }
+  .line-mask > * {
+    display: block;
+    transform: translateY(105%);
+    transition: transform 900ms var(--ease-out);
+    transition-delay: var(--line-delay, 0ms);
+  }
+  [data-shown] .line-mask > *,
+  .line-mask[data-shown] > * {
+    transform: none;
+  }
+
   /* Underline that draws from the left on hover. The one link gesture in the
      system; no opacity-fade hovers anywhere. */
   .ul-draw {
@@ -227,9 +340,42 @@
     opacity: 1;
     transform: none;
   }
+
+  /* Parallax, driven by the compositor rather than by JavaScript.
+     `view()` maps the element's own progress through the viewport onto the
+     animation, so there is no scroll listener, no rAF loop, and no
+     getBoundingClientRect per frame. Where the timeline is unsupported the
+     layer simply sits still — a missing depth effect is a non-event; a janky
+     one is a scored defect. */
+  @supports (animation-timeline: view()) {
+    [data-parallax] {
+      animation: parallax-shift linear both;
+      animation-timeline: view();
+      animation-range: cover 0% cover 100%;
+    }
+    @keyframes parallax-shift {
+      from {
+        transform: translate3d(0, calc(var(--par-shift, -12px) * -1), 0);
+      }
+      to {
+        transform: translate3d(0, var(--par-shift, -12px), 0);
+      }
+    }
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  /* Parallax and line reveals resolve to their final state rather than to a
+     faster version of themselves. Shortening a motion someone asked not to see
+     is still showing it to them. */
+  [data-parallax] {
+    animation: none !important;
+    transform: none !important;
+  }
+  .line-mask > * {
+    transform: none !important;
+    transition: none !important;
+  }
   [data-reveal] {
     opacity: 1 !important;
     transform: none !important;
