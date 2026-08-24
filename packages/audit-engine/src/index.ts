@@ -42,6 +42,7 @@ export { JscpdAdapter } from "./scanners/jscpd.js";
 export { SccAdapter, SCC_METRIC_KEYS } from "./scanners/scc.js";
 export { TrivyConfigAdapter } from "./scanners/trivy-config.js";
 export { HadolintAdapter } from "./scanners/hadolint.js";
+export { ZizmorAdapter } from "./scanners/zizmor.js";
 export { NucleiAdapter } from "./scanners/nuclei.js";
 export { LighthouseAdapter } from "./scanners/lighthouse.js";
 

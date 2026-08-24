@@ -25,6 +25,7 @@ version is running.
 | quality  | `scc`           | `ghcr.io/boyter/scc` v3.4.0 | `sha256:537c0a10cf21cdbefb8b1e644e3cef9a736bdc0ca11ee8deee2dc31e5b8ed7a3` | **signed, verified** | MIT |
 | hygiene  | `trivy-config`  | `aquasec/trivy` 0.58.0 | `sha256:b88012e2a0a309d6a8a00463d4e63e5e513377fb74eccbc8f9b0f8f81940ebeb` | **signed, verified** | Apache-2.0 |
 | hygiene  | `hadolint`      | `hadolint/hadolint` 2.12.0 | `sha256:30a8fd2e785ab6176eed53f74769e04f125afb2f74a6c52aef7d463583b6d45e` | none published | GPL-3.0 (separate container, never linked) |
+| hygiene  | `zizmor`        | `ghcr.io/zizmorcore/zizmor` 1.29.0 | `sha256:863026d54f91271b10b60b67ad8054cb37120167e162482597db102b3026a284` | none published | MIT |
 | dast     | `nuclei`        | `auditer/nuclei:3.4.10-t10.4.8-1` — built here, base `projectdiscovery/nuclei` v3.4.10 | base `sha256:aeb5ea2db32a252b8135707d2ad0e89b90e19a18ea7816d38759bc51efb46b97` | base: none published | MIT (binary + templates) |
 | ux       | `lighthouse`    | `femtopixel/google-lighthouse` v8.6.0 | `sha256:609559dac4184c63bcddaa7e109f3865c4eb44f46a3eb91eeaf22a09598eccdc` | none published | Apache-2.0 (Lighthouse) |
 
@@ -38,6 +39,11 @@ and pinning is what surfaced it:
 - `lighthouse` named `8.6.0`. That publisher tags with a leading `v`, so the real
   tag is `v8.6.0` and `8.6.0` resolves to nothing. Same intended version, real
   tag, pinned.
+
+`zizmor` was nearly a third. Reading its tag list as version numbers made
+`1.30.0` look like the newest release; the tag is `1.30.0-rc1`, and `1.30.0`
+does not resolve. **Read tags as strings, not as versions** — the parse that
+makes a tag comparable is the same parse that invents one.
 
 ## A pinned image is not a working scanner
 
@@ -93,6 +99,7 @@ and stay correct on either architecture.
 |-------|-----------|---------------|
 | `auditer/semgrep-rules:1.99.0-2` | `infra/docker/scanners/semgrep` | `scanners/semgrep.ts` |
 | `auditer/jscpd:5.0.16-1` | `infra/docker/scanners/jscpd` | `scanners/jscpd.ts` |
+| `auditer/nuclei:3.4.10-t10.4.8-1` | `infra/docker/scanners/nuclei` | `scanners/nuclei.ts` |
 | `auditer/chromium-pdf:136.0.7103.113-1` | `infra/docker/scanners/chromium` | `apps/worker/src/pdf.ts` |
 
 These carry **no `@sha256:`, and should not**. A digest identifies a manifest in a
@@ -107,9 +114,9 @@ to look when one of them drifts:
 
 - `semgrep`: pinned `semgrep/semgrep:1.99.0` base + pinned sast-rules commit.
 - `chromium`: base pinned by digest (`alpine:3.21@sha256:…`) + exact apk versions.
-- `jscpd`: pinned `jscpd@5.0.16`, but its base is `node:22-alpine`, a **moving
-  tag** — the one build input in this set that can still change under a rebuild.
-  Pin it by digest when that image is next touched.
+- `jscpd`: pinned `jscpd@5.0.16` on a `node:22-alpine` base pinned by digest.
+- `nuclei`: pinned `projectdiscovery/nuclei` base by digest + nuclei-templates
+  pinned by tag **and** commit, the build failing if the tag moves.
 
 Push any of these to a registry and it moves to the table above: pin it like the
 others.

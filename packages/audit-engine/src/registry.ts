@@ -7,6 +7,7 @@ import { JscpdAdapter } from "./scanners/jscpd.js";
 import { SccAdapter } from "./scanners/scc.js";
 import { TrivyConfigAdapter } from "./scanners/trivy-config.js";
 import { HadolintAdapter } from "./scanners/hadolint.js";
+import { ZizmorAdapter } from "./scanners/zizmor.js";
 import { NucleiAdapter } from "./scanners/nuclei.js";
 import { LighthouseAdapter } from "./scanners/lighthouse.js";
 
@@ -51,6 +52,7 @@ export function defaultRegistry(): ScannerRegistry {
     .register(new SccAdapter()) // quality — LOC/complexity metrics (feeds kLOC)
     .register(new TrivyConfigAdapter()) // hygiene
     .register(new HadolintAdapter()) // hygiene
+    .register(new ZizmorAdapter()) // hygiene — sécurité des workflows CI
     // Wave 3 — network pillars (verified targets + egress-scoped only)
     .register(new NucleiAdapter()) // dast
     .register(new LighthouseAdapter()); // ux

@@ -175,6 +175,15 @@ export async function prepare(opts: PrepareOpts): Promise<Workspace> {
   };
 }
 
+/**
+ * Marker emitted when the repository has GitHub Actions workflows.
+ *
+ * Not a basename like the rest: the file that matters is `.github/workflows/*.yml`,
+ * whose name is arbitrary. Adapters gate on this string, so it is exported
+ * rather than spelled out at each call site.
+ */
+export const WORKFLOWS_MANIFEST = ".github/workflows";
+
 /** Shallow scan of the repo root for known manifest basenames (relevance gate). */
 async function detectManifests(dir: string): Promise<string[]> {
   const found = new Set<string>();
@@ -185,6 +194,16 @@ async function detectManifests(dir: string): Promise<string[]> {
     }
   } catch {
     /* ignore */
+  }
+  // CI workflows are a whole attack surface the root scan cannot see, and the
+  // adapter that audits them must not run on a repository that has none —
+  // zizmor exits 3 "no inputs collected", which would be recorded as a failed
+  // scan for a repository that is simply not using GitHub Actions.
+  try {
+    const wf = await readdir(join(dir, ".github", "workflows"), { withFileTypes: true });
+    if (wf.some((e) => e.isFile() && /\.ya?ml$/i.test(e.name))) found.add(WORKFLOWS_MANIFEST);
+  } catch {
+    /* no workflows directory */
   }
   return [...found];
 }

@@ -108,11 +108,12 @@ jobs:
                aquasec/trivy@sha256:b88012e2a0a309d6a8a00463d4e63e5e513377fb74eccbc8f9b0f8f81940ebeb \
                hadolint/hadolint@sha256:30a8fd2e785ab6176eed53f74769e04f125afb2f74a6c52aef7d463583b6d45e \
                ghcr.io/boyter/scc@sha256:537c0a10cf21cdbefb8b1e644e3cef9a736bdc0ca11ee8deee2dc31e5b8ed7a3 \
+               ghcr.io/zizmorcore/zizmor@sha256:863026d54f91271b10b60b67ad8054cb37120167e162482597db102b3026a284 \
                femtopixel/google-lighthouse@sha256:609559dac4184c63bcddaa7e109f3865c4eb44f46a3eb91eeaf22a09598eccdc; do
                docker image inspect \"\$img\" >/dev/null 2>&1 || docker pull -q \"\$img\"
              done"
         # gitleaks v8.21.2 | osv-scanner v1.9.2 | trivy 0.58.0 | hadolint 2.12.0
-        # scc v3.4.0 | google-lighthouse v8.6.0
+        # scc v3.4.0 | zizmor 1.29.0 | google-lighthouse v8.6.0
         #
         # nuclei left this list when it stopped being a third-party image: it is
         # now auditer/nuclei, built above so its template corpus ships with it.
@@ -133,10 +134,20 @@ jobs:
         # first would leave the worker briefly running code that expects columns
         # the database does not have yet — the exact window in which a queued job
         # crashes on a missing column.
+        #
+        # `--profile ops` is load-bearing, not decoration. Without it compose
+        # skips every service behind a profile, so the one-shot ops jobs
+        # (vuln-feeds-refresh, osv-db-refresh) were never rebuilt here. They were
+        # built once, implicitly, by the first `compose run` that found no image
+        # — and every later deploy reused that image because it existed. Measured
+        # on the server: api/web/worker dated 16:25 while vuln-feeds-refresh
+        # still dated 11:51, four and a half hours and several commits behind.
+        # The feed refreshers are exactly the code that must not silently run an
+        # old version: their output is the data every verdict rests on.
         run: |
           ssh -p "${{ vars.DEPLOY_PORT || '22' }}" \
             "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
-            "cd ${{ vars.DEPLOY_PATH }} && docker compose -p auditer --env-file .env -f infra/compose/docker-compose.server.yml build"
+            "cd ${{ vars.DEPLOY_PATH }} && docker compose -p auditer --env-file .env -f infra/compose/docker-compose.server.yml --profile ops build"
 
       - name: Refresh vulnerability feeds (non-fatal)
         # EPSS republishes daily and KEV several times a week, so a refresh per
