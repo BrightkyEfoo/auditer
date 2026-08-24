@@ -36,6 +36,12 @@ export default function ReposPage() {
   const [pillars, setPillars] = useState<string[]>(["secrets", "sca"]);
   const [busy, setBusy] = useState(false);
 
+  // Two-step deletion, held in the page rather than in a `confirm()` dialog —
+  // the row stays visible while its removal is being confirmed, and the project
+  // forbids native dialogs anyway.
+  const [armed, setArmed] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+
   const refresh = useCallback(() => {
     api.listConnections().then(setConnections).catch(() => setConnections([]));
     api
@@ -70,6 +76,23 @@ export default function ReposPage() {
       setError(String(e));
     } finally {
       setImporting(null);
+    }
+  }
+
+  /** Removes the repository AND its runs — the api deletes both, say so above. */
+  async function removeRepo(r: Repo) {
+    setDeleting(r.id);
+    setError(null);
+    try {
+      await api.deleteRepo(r.id);
+      // The configurator points at a row that no longer exists.
+      setSelected((cur) => (cur?.id === r.id ? null : cur));
+      refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setDeleting(null);
+      setArmed(null);
     }
   }
 
@@ -259,24 +282,31 @@ export default function ReposPage() {
               <ul className="border-t border-line">
                 {repos.map((r) => {
                   const active = selected?.id === r.id;
+                  const isArmed = armed === r.id;
                   return (
-                    <li key={r.id}>
+                    // The row is a <li> flex container, not one big <button>:
+                    // the delete control is a second button and buttons cannot
+                    // nest.
+                    <li
+                      key={r.id}
+                      className={cn(
+                        "group relative flex items-center gap-3 border-b border-line pr-1 transition-colors duration-[180ms]",
+                        active ? "bg-slate" : "hover:bg-slate/60",
+                      )}
+                    >
+                      <span
+                        aria-hidden
+                        className={cn(
+                          "absolute inset-y-0 left-0 w-px origin-top bg-acid transition-transform duration-300 ease-out",
+                          active ? "scale-y-100" : "scale-y-0 group-hover:scale-y-100",
+                        )}
+                      />
                       <button
                         onClick={() => setSelected(active ? null : r)}
                         aria-pressed={active}
-                        className={cn(
-                          "group relative flex w-full items-center justify-between gap-4 border-b border-line py-4 text-left transition-colors duration-[180ms]",
-                          active ? "bg-slate" : "hover:bg-slate/60",
-                        )}
+                        className="flex min-w-0 flex-1 items-center justify-between gap-4 py-4 pl-4 text-left"
                       >
-                        <span
-                          aria-hidden
-                          className={cn(
-                            "absolute inset-y-0 left-0 w-px origin-top bg-acid transition-transform duration-300 ease-out",
-                            active ? "scale-y-100" : "scale-y-0 group-hover:scale-y-100",
-                          )}
-                        />
-                        <span className="min-w-0 pl-4">
+                        <span className="min-w-0">
                           <span className="block truncate font-mono text-data text-mineral">
                             {r.fullName}
                           </span>
@@ -294,6 +324,40 @@ export default function ReposPage() {
                           {active ? "sélectionné" : "choisir"}
                         </span>
                       </button>
+
+                      {isArmed ? (
+                        <span className="flex shrink-0 items-center gap-2">
+                          <span className="hidden font-mono text-label uppercase text-high sm:inline">
+                            et ses relevés ?
+                          </span>
+                          <Button
+                            variant="quiet"
+                            size="sm"
+                            onClick={() => setArmed(null)}
+                            disabled={deleting === r.id}
+                          >
+                            Annuler
+                          </Button>
+                          <Button
+                            variant="danger"
+                            size="sm"
+                            onClick={() => removeRepo(r)}
+                            disabled={deleting === r.id}
+                          >
+                            {deleting === r.id ? "…" : "Supprimer"}
+                          </Button>
+                        </span>
+                      ) : (
+                        <Button
+                          variant="quiet"
+                          size="sm"
+                          className="shrink-0"
+                          onClick={() => setArmed(r.id)}
+                          aria-label={`Supprimer ${r.fullName} et ses relevés`}
+                        >
+                          Supprimer
+                        </Button>
+                      )}
                     </li>
                   );
                 })}

@@ -6,6 +6,22 @@
  * IMPORTANT — the identity of the publisher below uses explicit placeholders.
  * They are marked so they cannot be mistaken for real registration data; fill
  * them before any commercial launch.
+ *
+ * THE ONE RULE FOR EDITING THIS FILE
+ * Every sentence here describes what the code DOES, never what we would like it
+ * to do. A published promise with no implementation behind it is the single
+ * legal exposure a product like this can create out of nothing, and this file
+ * has already been caught doing it once: it announced four deletions and an
+ * export that did not exist, and three retention periods that nothing enforced.
+ *
+ * So, concretely, before changing a sentence here:
+ *   - a duration must exist as a constant in
+ *     apps/api/src/account/retention.service.ts and be applied by purge();
+ *   - an action "depuis l'interface" must have BOTH an endpoint and a control
+ *     in the app that reaches it;
+ *   - if a mechanism exists but is triggered by hand, SAY SO. "Nous le faisons
+ *     à la main" is a sentence a regulator can live with. "C'est automatique",
+ *     when it is not, is not.
  */
 
 /** A paragraph, or a bulleted list of items. */
@@ -46,8 +62,8 @@ export const LEGAL_DOCS: Record<string, LegalDoc> = {
     title: "Politique de confidentialité",
     summary:
       "Ce que nous collectons, ce que nous ne gardons pas — à commencer par votre code source —, combien de temps nous conservons le reste, à qui nous le transmettons, et comment exercer vos droits.",
-    version: "1.0",
-    updated: "23 août 2026",
+    version: "1.1",
+    updated: "24 août 2026",
     law: "RGPD (Règlement UE 2016/679), droit camerounais",
     sections: [
       {
@@ -85,7 +101,7 @@ export const LEGAL_DOCS: Record<string, LegalDoc> = {
           [
             "Fournir le service — créer votre compte, importer vos dépôts, exécuter les audits, produire les rapports : exécution du contrat qui nous lie.",
             "Sécuriser le service — journaux techniques, détection d’abus, limitation de débit, attestations de propriété de domaine avant tout scan réseau : intérêt légitime à protéger l’infrastructure, nos utilisateurs et les tiers qui pourraient être visés à tort.",
-            "Communications de service — vérification d’adresse, réinitialisation de mot de passe, notification de fin de run : exécution du contrat.",
+            "Communications de service — nous n’envoyons à ce jour aucun courriel automatique : ni vérification d’adresse, ni réinitialisation de mot de passe, ni notification de fin de relevé. Le service ne comporte pas de mécanisme d’envoi. Votre adresse identifie le compte, sert à confirmer une suppression, et nous permet de vous joindre à la main s’il le faut. Le jour où un envoi automatique existera, ce paragraphe sera corrigé avant sa mise en service.",
             "Obligations comptables et réponse à une réquisition régulière d’autorité : obligation légale.",
             "Toute finalité sortant de ce cadre, par exemple une lettre d’information produit, repose sur votre consentement, donné par un acte positif et révocable à tout moment sans justification.",
           ],
@@ -97,13 +113,16 @@ export const LEGAL_DOCS: Record<string, LegalDoc> = {
         body: [
           "Nous n’avons aucun intérêt à garder des données au-delà de leur utilité : chaque donnée conservée est une donnée à protéger. Les durées sont les suivantes.",
           [
-            "Compte et données d’identification : tant que le compte est actif. Après suppression, 30 jours de rétention technique le temps que la rotation des sauvegardes s’achève, puis effacement.",
-            "Findings et rapports : 24 mois à compter du run, afin que vous puissiez suivre l’évolution d’un dépôt dans le temps. Vous pouvez les supprimer avant, run par run ou dépôt par dépôt.",
-            "Journaux d’exécution des scanners et journaux techniques : 90 jours.",
-            "Jetons d’accès VCS : jusqu’à révocation — la vôtre, celle de votre organisation, ou la désinstallation de la GitHub App. Ils sont alors détruits.",
-            "Attestations de propriété de domaine attachées aux scans réseau : 24 mois, parce qu’elles constituent la preuve de l’autorisation d’un scan et protègent les deux parties.",
+            "Compte et données d’identification : tant que le compte est actif. La suppression, déclenchée depuis les réglages, est immédiate et définitive dans la base : le compte, l’organisation, les dépôts importés, les relevés, les findings, les rapports et les fichiers stockés associés disparaissent dans la foulée. Il n’y a ni corbeille, ni délai de grâce, ni restauration possible.",
+            "Findings, rapports et métadonnées de relevé : 24 mois à compter du relevé, afin que vous puissiez suivre l’évolution d’un dépôt dans le temps. Passé ce délai, le relevé entier est effacé. Vous n’avez pas à attendre cette échéance : la suppression d’un relevé ou d’un dépôt est immédiate depuis l’interface.",
+            "Journaux d’exécution des scanners et journaux techniques : 90 jours. Sont concernés la sortie brute des moteurs, les journaux de conteneur et les messages d’erreur attachés à chaque exécution.",
+            "Jetons d’accès VCS : jusqu’à révocation, qui se fait depuis les réglages. Le chiffré est alors écrasé et la connexion supprimée. La révocation chez GitHub ou GitLab, elle, se fait chez eux : nous n’avons pas le pouvoir de désinstaller une application à votre place.",
+            "Attestations d’autorisation des scans réseau : 24 mois, parce qu’elles constituent la preuve de l’autorisation d’un scan et protègent la cible, qui est un tiers. Elles survivent volontairement à la suppression du compte et expirent sur leur propre horloge.",
+            "Sessions : 30 jours, la durée du cookie. Les sessions expirées sont effacées de la base par la même purge que ci-dessous.",
             "Code source cloné : la durée du run, et rien de plus. Voir la section précédente.",
           ],
+          "Une précision que nous préférons écrire plutôt que laisser croire : les durées de 90 jours et de 24 mois ci-dessus sont bien implémentées — une fonction de purge existe et applique exactement ces échéances — mais AUCUN ORDONNANCEUR NE LA DÉCLENCHE ENCORE. Nous la lançons à la main. Concrètement, une donnée peut donc rester au-delà de son échéance jusqu’à notre prochaine exécution. Si cela vous concerne, écrivez-nous : nous purgeons sous 30 jours à compter de votre demande. Ce paragraphe disparaîtra le jour où la purge sera planifiée, pas avant.",
+          "Ce qui, en revanche, ne dépend d’aucune purge : la suppression d’un dépôt, d’un relevé, d’une connexion ou du compte est exécutée au moment où vous la demandez, dans la seconde.",
         ],
       },
       {
@@ -128,7 +147,7 @@ export const LEGAL_DOCS: Record<string, LegalDoc> = {
           [
             "Les moteurs d’analyse s’exécutent dans des conteneurs gVisor (runsc) éphémères : réseau coupé par défaut, système de fichiers en lecture seule, toutes les capacités Linux retirées, utilisateur non-root, images épinglées par empreinte. Un moteur compromis par un dépôt hostile n’a ni réseau pour exfiltrer, ni écriture pour persister.",
             "Les jetons d’accès VCS sont chiffrés par enveloppe en AES-256-GCM, la clé maîtresse ne quittant jamais un coffre (OpenBao Transit). Une copie de la base de données ne suffit donc pas à les déchiffrer.",
-            "Le cloisonnement entre organisations repose sur la Row-Level Security de PostgreSQL, en refus par défaut : chaque ligne porte l’identifiant de son organisation, et une requête sans contexte d’organisation ne renvoie rien. L’isolation est appliquée par la base, pas seulement par le code applicatif.",
+            "Le cloisonnement entre organisations est posé à deux niveaux. Chaque ligne porte l’identifiant de son organisation, et toute requête est ouverte dans une transaction qui déclare l’organisation appelante puis filtre sur elle. Des politiques de Row-Level Security PostgreSQL, en refus par défaut, sont installées sur toutes les tables concernées et constituent le filet : elles s’appliquent intégralement au processus qui exécute les analyses. Nous ne prétendons pas qu’aujourd’hui tous nos processus soient soumis à ce filet — celui qui sert l’interface se connecte encore avec un rôle qui le contourne, et son cloisonnement repose donc sur le filtrage applicatif décrit ci-dessus. Nous préférons l’écrire.",
             "Les mots de passe sont hachés en scrypt. Les sessions reposent sur un cookie opaque HttpOnly, SameSite=Lax, dont seul un hachage SHA-256 est conservé côté serveur : une fuite de la table de sessions ne rend aucune session rejouable.",
             "Avant tout scan réseau, la propriété du domaine cible doit être prouvée par un enregistrement DNS TXT. Les adresses IP sont ré-résolues et épinglées au démarrage du scan, ce qui referme la fenêtre entre la vérification et l’exécution.",
           ],
@@ -146,7 +165,7 @@ export const LEGAL_DOCS: Record<string, LegalDoc> = {
             "Opposition : vous opposer à un traitement fondé sur notre intérêt légitime, pour des raisons tenant à votre situation particulière.",
             "Limitation : demander le gel d’un traitement le temps qu’une contestation soit tranchée.",
           ],
-          "Une partie de ces droits s’exerce directement depuis l’interface, sans nous écrire : suppression d’un dépôt, suppression d’un run et de ses findings, révocation d’un jeton, suppression du compte.",
+          "Une partie de ces droits s’exerce directement depuis l’interface, sans nous écrire : export de vos données au format JSON depuis les réglages, suppression d’un dépôt et de ses relevés depuis la page Dépôts, suppression d’un relevé et de ses findings depuis la page du relevé, révocation d’une connexion et destruction du jeton chiffré depuis les réglages, suppression du compte depuis les réglages. Ces cinq actions sont exécutées immédiatement et sont irréversibles ; la suppression du compte demande la ressaisie de votre adresse e-mail, vérifiée sur nos serveurs.",
           `Pour le reste, écrivez à ${PUBLISHER.dpo} depuis l’adresse email de votre compte. Si nous avons un doute raisonnable sur votre identité, nous pouvons demander un élément de vérification supplémentaire — et rien d’autre que ce qui est nécessaire à cette vérification.`,
           "Nous répondons dans un délai d’un mois à compter de la réception de la demande. Ce délai peut être prolongé de deux mois si la demande est complexe ou multiple ; dans ce cas, nous vous en informons avec le motif avant la fin du premier mois.",
           "Si votre demande porte sur des données figurant dans le dépôt d’une organisation cliente, c’est cette organisation qui en est responsable de traitement, et nous ne pouvons pas décider à sa place. Nous lui transmettons votre demande sans délai et lui fournissons les moyens techniques d’y répondre.",
@@ -176,8 +195,8 @@ export const LEGAL_DOCS: Record<string, LegalDoc> = {
     title: "Conditions générales d’utilisation",
     summary:
       "Les règles d’usage du service : ce qu’un audit automatisé prouve et ne prouve pas, et à quelles conditions strictes vous pouvez lancer un scan réseau sur une cible.",
-    version: "1.0",
-    updated: "23 août 2026",
+    version: "1.1",
+    updated: "24 août 2026",
     law: "Droit camerounais, RGPD applicable aux résidents de l’UE",
     sections: [
       {
@@ -194,7 +213,7 @@ export const LEGAL_DOCS: Record<string, LegalDoc> = {
         body: [
           [
             "Vous devez avoir 16 ans révolus. Le service n’est pas destiné aux mineurs de moins de 16 ans, et nous ne collectons pas sciemment leurs données. Si nous constatons un tel compte, nous le supprimons.",
-            "Les informations fournies à l’inscription doivent être exactes et tenues à jour. Une adresse email valide est nécessaire : c’est par elle que passent les notifications de sécurité.",
+            "Les informations fournies à l’inscription doivent être exactes et tenues à jour. Une adresse email valide est nécessaire : c’est le seul moyen dont nous disposons pour vous joindre, et c’est elle que vous ressaisissez pour confirmer la suppression de votre compte. Le service n’envoie aujourd’hui aucun courriel automatique — ni vérification d’adresse, ni réinitialisation de mot de passe : toute correspondance de notre part est envoyée à la main.",
             "Un compte est personnel. Vous êtes responsable de la confidentialité de vos identifiants et de toute action menée depuis votre compte, y compris par un tiers à qui vous les auriez confiés.",
             `Prévenez-nous sans délai à ${PUBLISHER.email} si vous soupçonnez un accès non autorisé. Nous pouvons alors invalider toutes vos sessions actives.`,
           ],
@@ -266,7 +285,7 @@ export const LEGAL_DOCS: Record<string, LegalDoc> = {
           [
             "Nous prévenons les titulaires de compte par email au moins 30 jours avant l’entrée en vigueur des nouveaux tarifs.",
             "Aucun montant ne sera prélevé sans une acceptation explicite de votre part. L’absence de réponse ne vaut pas acceptation.",
-            "À défaut d’acceptation, le compte bascule en lecture seule ou est clôturé, à votre choix, et vos données restent exportables pendant 30 jours.",
+            "À défaut d’acceptation, le compte bascule en lecture seule ou est clôturé, à votre choix. L’export JSON de vos données reste disponible depuis les réglages tant que le compte existe : nous ne clôturons pas un compte sans vous avoir laissé le temps de le télécharger. Passé la clôture, il n’y a plus rien à exporter, puisque la suppression n’est pas différée.",
           ],
         ],
       },
@@ -282,7 +301,7 @@ export const LEGAL_DOCS: Record<string, LegalDoc> = {
       {
         heading: "Suspension et résiliation",
         body: [
-          "Vous pouvez fermer votre compte à tout moment depuis l’interface, sans motif et sans préavis. La suppression entraîne l’effacement de vos données selon les durées annoncées dans la politique de confidentialité.",
+          "Vous pouvez fermer votre compte à tout moment depuis les réglages, sans motif et sans préavis. L’opération demande la ressaisie de votre adresse e-mail, vérifiée sur nos serveurs, puis efface immédiatement le compte, l’organisation, les dépôts importés, les relevés, les findings, les rapports et les fichiers stockés associés ; les jetons d’accès chiffrés sont détruits. Elle est irréversible et rien n’est conservé pour vous être restitué ensuite : exportez vos données avant si vous en avez besoin. Seules subsistent les attestations d’autorisation des scans réseau que vous avez lancés, qui protègent leurs cibles et expirent au bout de 24 mois.",
           "Nous pouvons suspendre ou résilier un compte dans les cas suivants :",
           [
             "Violation de ces conditions, en particulier des sections sur l’usage autorisé du test de pénétration et sur les usages interdits.",
@@ -318,8 +337,8 @@ export const LEGAL_DOCS: Record<string, LegalDoc> = {
     title: "Politique cookies",
     summary:
       "Nous posons un seul cookie, strictement nécessaire à votre session, et aucun traceur. Ce document est court parce qu’il n’y a rien d’autre à déclarer.",
-    version: "1.0",
-    updated: "23 août 2026",
+    version: "1.1",
+    updated: "24 août 2026",
     law: "RGPD (Règlement UE 2016/679), directive ePrivacy 2002/58/CE",
     sections: [
       {
@@ -370,7 +389,7 @@ export const LEGAL_DOCS: Record<string, LegalDoc> = {
           "Tout navigateur permet de bloquer les cookies d’un site ou de les supprimer, depuis ses paramètres de confidentialité. Vous pouvez aussi simplement vous déconnecter : la session est alors invalidée côté serveur et le cookie retiré.",
           "La conséquence est immédiate et sans contournement : sans ce cookie, impossible de rester connecté. Vous pourrez consulter les pages publiques, mais pas accéder à un dépôt, lancer un audit ni lire un rapport.",
           "Nous n’avons prévu aucun mécanisme de repli — pas d’identifiant de session passé dans l’URL, par exemple — parce que ces solutions de remplacement sont moins sûres que le cookie qu’elles remplacent.",
-          `Pour supprimer non pas le cookie mais les données associées à votre compte, reportez-vous à la politique de confidentialité ou écrivez à ${PUBLISHER.dpo}.`,
+          `Pour supprimer non pas le cookie mais les données associées à votre compte, la page Réglages du service propose l’export puis la suppression, exécutés immédiatement. Le détail des durées figure dans la politique de confidentialité ; pour tout le reste, écrivez à ${PUBLISHER.dpo}.`,
         ],
       },
     ],
@@ -381,8 +400,8 @@ export const LEGAL_DOCS: Record<string, LegalDoc> = {
     title: "Accord de sous-traitance (RGPD)",
     summary:
       "Le contrat exigé par l’article 28 du RGPD lorsque vous nous confiez des dépôts susceptibles de contenir des données personnelles : vous restez responsable de traitement, nous agissons sur vos instructions.",
-    version: "1.0",
-    updated: "23 août 2026",
+    version: "1.1",
+    updated: "24 août 2026",
     law: "RGPD (Règlement UE 2016/679), article 28",
     sections: [
       {
@@ -428,7 +447,7 @@ export const LEGAL_DOCS: Record<string, LegalDoc> = {
       {
         heading: "Instructions documentées",
         body: [
-          "Nous ne traitons les données que sur instruction documentée de votre part. Vos instructions sont constituées par le présent accord, les conditions générales, et vos actions dans l’interface ou l’API : importer un dépôt, lancer un run, choisir des piliers, supprimer un rapport, révoquer un jeton.",
+          "Nous ne traitons les données que sur instruction documentée de votre part. Vos instructions sont constituées par le présent accord, les conditions générales, et vos actions dans l’interface ou l’API : importer un dépôt, lancer un relevé, choisir des piliers, supprimer un dépôt, supprimer un relevé et ses findings, révoquer une connexion, exporter vos données, supprimer le compte.",
           "Nous n’utilisons vos données pour aucune finalité propre. Nous ne les vendons pas, ne les monétisons pas, et ne les utilisons pas pour entraîner un modèle.",
           "Si une instruction nous paraît constituer une violation du RGPD ou d’une autre disposition relative à la protection des données, nous vous en informons sans délai et pouvons en suspendre l’exécution jusqu’à clarification.",
           "Si le droit auquel nous sommes soumis nous impose un traitement allant au-delà de vos instructions, nous vous en informons avant de le mettre en œuvre, sauf si ce droit interdit une telle information pour des motifs importants d’intérêt public.",
@@ -453,7 +472,7 @@ export const LEGAL_DOCS: Record<string, LegalDoc> = {
           [
             "Isolation d’exécution : les moteurs d’analyse tournent dans des conteneurs gVisor (runsc) éphémères, réseau coupé par défaut, système de fichiers en lecture seule, toutes les capacités Linux retirées, utilisateur non-root, images épinglées par empreinte.",
             "Chiffrement des secrets : les jetons d’accès VCS sont chiffrés par enveloppe en AES-256-GCM, la clé maîtresse résidant dans un coffre (OpenBao Transit) qu’elle ne quitte pas.",
-            "Cloisonnement des clients : Row-Level Security PostgreSQL en refus par défaut, chaque ligne portant l’identifiant de son organisation. Une requête sans contexte d’organisation ne renvoie rien.",
+            "Cloisonnement des clients : chaque ligne porte l’identifiant de son organisation et toute requête est ouverte dans une transaction qui déclare l’organisation appelante puis filtre sur elle. Des politiques de Row-Level Security PostgreSQL en refus par défaut sont installées sur toutes les tables concernées et s’appliquent intégralement au processus d’analyse ; le processus qui sert l’interface se connecte encore avec un rôle qui les contourne, et son cloisonnement repose donc sur le filtrage applicatif. Nous le signalons plutôt que de laisser supposer l’inverse.",
             "Authentification : mots de passe hachés en scrypt, sessions portées par un cookie opaque HttpOnly SameSite=Lax dont seul un hachage SHA-256 est conservé côté serveur.",
             "Minimisation : le code source n’est jamais persisté, et les extraits de preuve attachés aux findings sont caviardés.",
             "Contrôle des scans réseau : preuve de propriété du domaine par enregistrement DNS TXT, adresses IP ré-résolues et épinglées au démarrage du scan.",
@@ -480,7 +499,7 @@ export const LEGAL_DOCS: Record<string, LegalDoc> = {
         body: [
           "Compte tenu de la nature du traitement et des informations dont nous disposons, nous vous assistons sur les points suivants.",
           [
-            "Droits des personnes concernées : si une personne nous saisit directement au sujet du contenu de l’un de vos dépôts, nous ne répondons pas à votre place. Nous vous transmettons la demande sans délai et vous fournissons les moyens techniques d’y répondre : export, suppression d’un run et de ses findings, suppression d’un dépôt.",
+            "Droits des personnes concernées : si une personne nous saisit directement au sujet du contenu de l’un de vos dépôts, nous ne répondons pas à votre place. Nous vous transmettons la demande sans délai et vous fournissons les moyens techniques d’y répondre, qui existent tous dans l’interface : export JSON de l’organisation, suppression d’un relevé et de ses findings, suppression d’un dépôt et de ses relevés, révocation d’une connexion.",
             "Analyse d’impact relative à la protection des données (article 35) et consultation préalable de l’autorité (article 36) : nous vous fournissons les informations techniques nécessaires, dont celles de la section Mesures de sécurité.",
             "Sécurité du traitement (article 32) : nous vous communiquons la description des mesures en vigueur et vous informons de leurs évolutions substantielles.",
             "Notification aux autorités et communication aux personnes (articles 33 et 34) : nous vous fournissons les éléments dont nous disposons pour vous permettre de notifier dans les délais qui vous sont impartis.",
@@ -507,13 +526,14 @@ export const LEGAL_DOCS: Record<string, LegalDoc> = {
       {
         heading: "Sort des données en fin de contrat",
         body: [
-          "À la fin de la prestation — clôture du compte, résiliation, arrêt du service — vous choisissez entre la suppression et la restitution.",
+          "À la fin de la prestation — clôture du compte, résiliation, arrêt du service — vous choisissez entre la suppression et la restitution. L’ordre compte, et il vous appartient : la restitution se fait avant, jamais après.",
           [
-            "Restitution : export de vos findings, rapports et métadonnées de run dans un format structuré et lisible par machine, mis à disposition pendant 30 jours.",
-            "Suppression : effacement des données actives dans un délai de 30 jours à compter de la demande ou de la clôture.",
-            "Sauvegardes : les copies résiduelles présentes dans les sauvegardes disparaissent avec leur rotation, au plus tard au terme de ce même délai de 30 jours.",
-            "Jetons d’accès VCS : détruits immédiatement à la révocation ou à la clôture, sans attendre le délai de 30 jours.",
-            "Code source : rien à supprimer, puisque rien n’a été conservé au-delà de la durée du run.",
+            "Restitution : un export JSON de votre compte, de votre organisation, de vos connexions (sans les jetons), dépôts, cibles, relevés, findings, rapports, décisions de triage et journal d’activité, disponible à tout moment depuis les réglages tant que le compte existe. Il n’est pas « mis à disposition pendant 30 jours » après la clôture : la suppression n’étant pas différée, il n’y aurait plus rien à mettre à disposition.",
+            "Suppression : immédiate lorsqu’elle est déclenchée depuis les réglages. Sur demande écrite, nous l’exécutons sous 30 jours.",
+            "Sauvegardes : nous n’exploitons aucune copie de sauvegarde pour restituer ou reconstituer des données supprimées. Les copies résiduelles qui subsisteraient dans une sauvegarde disparaissent avec sa rotation ; nous ne datons pas cette rotation ici, faute de pouvoir vous la garantir.",
+            "Jetons d’accès VCS : le chiffré est écrasé au moment de la révocation ou de la clôture, avant toute autre opération, et sans attendre aucun délai.",
+            "Code source : rien à supprimer, puisque rien n’a été conservé au-delà de la durée du relevé.",
+            "Attestations d’autorisation des scans réseau : conservées 24 mois à compter du scan, y compris après la clôture. Elles ne vous concernent pas seul — elles établissent qu’une cible tierce avait bien été autorisée — et c’est pourquoi elles ne suivent pas le compte.",
           ],
           "Nous ne conservons ensuite que ce qu’une obligation légale impose de conserver, pour la seule durée de cette obligation et sans autre traitement que celui qu’elle exige.",
           "À défaut de choix exprimé de votre part dans les 30 jours suivant la fin de la prestation, la suppression s’applique par défaut.",

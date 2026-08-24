@@ -56,7 +56,7 @@ const MIN_PASSWORD_LENGTH = 12;
  * agreed to, which is the whole point of storing it rather than a boolean.
  * Must match the `version` field of the documents in apps/web/lib/legal.ts.
  */
-const CURRENT_TERMS_VERSION = "1.0";
+const CURRENT_TERMS_VERSION = "1.1";
 
 /**
  * Caller address. Express only trusts X-Forwarded-For when `trust proxy` is
@@ -190,7 +190,7 @@ export class AuthController {
 
   /** Shared: upsert user + identity, ensure a personal org, set the session. */
   private async completeLogin(p: OAuthProfile, res: Response): Promise<void> {
-    const { userId, organizationId } = await this.prisma.$transaction(async (tx) => {
+    const { userId, organizationId } = await this.prisma.privileged.$transaction(async (tx) => {
       const user = await tx.user.upsert({
         where: { email: p.email },
         update: { name: p.name, avatarUrl: p.avatarUrl },
@@ -242,7 +242,7 @@ export class AuthController {
 
     let created: { userId: string; organizationId: string };
     try {
-      created = await this.prisma.$transaction(async (tx) => {
+      created = await this.prisma.privileged.$transaction(async (tx) => {
         const existing = await tx.user.findUnique({ where: { email: body.email } });
         // Sign-up is the one place where telling the truth about an existing
         // address is right: the user needs to know to log in instead, and the
@@ -317,7 +317,7 @@ export class AuthController {
 
     // An account can predate its org (invited, then never onboarded), so resolve
     // it through the same path the OAuth login uses rather than assuming one.
-    const organizationId = await this.prisma.$transaction((tx) =>
+    const organizationId = await this.prisma.privileged.$transaction((tx) =>
       ensurePersonalOrg(tx, user.id, slugLoginFromEmail(user.email), user.name),
     );
 
@@ -397,6 +397,15 @@ export class AuthController {
  * exactly one place. The random suffix is not decoration: logins collide across
  * providers and across email domains — the "alice" on GitHub and the owner of
  * alice@example.com are two different people, and `slug` is unique.
+ */
+/**
+ * Creates (or finds) the user's own organization.
+ *
+ * Runs on the PRIVILEGED connection at every call site, and that is the single
+ * exception in the api: there is no organization to scope to yet, so the RLS
+ * policy's WITH CHECK on `organizations` — which compares the new row's id to
+ * `app.current_org_id` — would reject the insert on the constrained role. Every
+ * other write in the api goes through `prisma.tenant()` and is subject to RLS.
  */
 async function ensurePersonalOrg(
   tx: TenantClient,

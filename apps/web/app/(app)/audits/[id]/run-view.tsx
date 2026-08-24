@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { PageHead } from "@/components/app/shell";
 import {
   Button,
@@ -167,21 +168,23 @@ export function RunView({ runId }: { runId: string }) {
             : undefined
         }
         actions={
-          TERMINAL.has(status) ? (
-            report?.downloadPath ? (
-              <ButtonLink href={report.downloadPath} variant="primary" download>
-                Télécharger le rapport
-              </ButtonLink>
-            ) : (
-              <Button onClick={exportReport} disabled={exported === "busy"}>
-                {exported === "busy"
-                  ? "rédaction en cours…"
-                  : exported === "failed"
-                    ? "Réessayer l'export"
-                    : "Générer le rapport"}
-              </Button>
-            )
-          ) : undefined
+          <>
+            {TERMINAL.has(status) &&
+              (report?.downloadPath ? (
+                <ButtonLink href={report.downloadPath} variant="primary" download>
+                  Télécharger le rapport
+                </ButtonLink>
+              ) : (
+                <Button onClick={exportReport} disabled={exported === "busy"}>
+                  {exported === "busy"
+                    ? "rédaction en cours…"
+                    : exported === "failed"
+                      ? "Réessayer l'export"
+                      : "Générer le rapport"}
+                </Button>
+              ))}
+            <DeleteRun runId={runId} />
+          </>
         }
       />
 
@@ -350,6 +353,58 @@ export function RunView({ runId }: { runId: string }) {
         </div>
       </section>
     </>
+  );
+}
+
+/**
+ * Erase a run and its findings — one of the four deletions the privacy policy
+ * promises can be done from the interface.
+ *
+ * Two steps, in place, no `confirm()`: the run is still on screen while its
+ * removal is being confirmed, which is the only moment the user can still weigh
+ * what they are about to lose. A run in progress is cancelled by the api before
+ * it is deleted, so the button does not need to be disabled while it runs.
+ */
+function DeleteRun({ runId }: { runId: string }) {
+  const router = useRouter();
+  const [armed, setArmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  async function remove() {
+    setBusy(true);
+    setFailed(false);
+    try {
+      await api.deleteAudit(runId);
+      router.push("/audits");
+      router.refresh();
+    } catch {
+      setFailed(true);
+      setBusy(false);
+      setArmed(false);
+    }
+  }
+
+  if (!armed) {
+    return (
+      <Button variant="quiet" onClick={() => setArmed(true)}>
+        {failed ? "Échec — réessayer" : "Supprimer ce relevé"}
+      </Button>
+    );
+  }
+
+  return (
+    <span className="flex items-center gap-2">
+      <span className="font-mono text-label uppercase text-high">
+        effacer le relevé et ses findings ?
+      </span>
+      <Button variant="quiet" onClick={() => setArmed(false)} disabled={busy}>
+        Annuler
+      </Button>
+      <Button variant="danger" onClick={remove} disabled={busy}>
+        {busy ? "suppression…" : "Confirmer"}
+      </Button>
+    </span>
   );
 }
 

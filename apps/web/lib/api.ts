@@ -17,6 +17,23 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/**
+ * Same request, no body expected. The deletion endpoints answer 204, and
+ * `res.json()` on an empty body throws — which would report every successful
+ * deletion as a failure.
+ */
+async function reqVoid(path: string, init?: RequestInit): Promise<void> {
+  const res = await fetch(`/api${path}`, {
+    ...init,
+    headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`${res.status} ${res.statusText}: ${body}`);
+  }
+}
+
 export interface Repo {
   id: string;
   fullName: string;
@@ -132,7 +149,32 @@ export const api = {
       body: JSON.stringify({ format: "html" }),
     }),
   getReport: (runId: string) => req<Report>(`/reports/${runId}`),
+
+  /* ── Effacement et portabilité ─────────────────────────────────────────
+     Les quatre suppressions annoncées dans la politique de confidentialité,
+     plus l'export. Toutes sont irréversibles côté serveur : l'appelant DOIT
+     demander une confirmation explicite avant de les appeler. */
+
+  /** Supprime un dépôt importé et tous ses relevés. */
+  deleteRepo: (id: string) => reqVoid(`/repos/${id}`, { method: "DELETE" }),
+  /** Supprime un relevé, ses findings, ses rapports et ses artefacts. */
+  deleteAudit: (id: string) => reqVoid(`/audits/${id}`, { method: "DELETE" }),
+  /** Révoque une connexion : détruit le jeton chiffré, retire les dépôts liés. */
+  deleteConnection: (id: string) => reqVoid(`/connections/${id}`, { method: "DELETE" }),
+  /** Supprime le compte. `confirmEmail` est vérifié côté serveur. */
+  deleteAccount: (confirmEmail: string) =>
+    req<{ ok: true; organizations: number; storageObjects: number }>("/account", {
+      method: "DELETE",
+      body: JSON.stringify({ confirmEmail }),
+    }),
 };
+
+/**
+ * Export JSON du compte et de l'organisation. C'est un lien, pas un fetch : le
+ * serveur répond en pièce jointe et le navigateur enregistre le fichier sans
+ * qu'on ait à le charger en mémoire ni à fabriquer un blob.
+ */
+export const ACCOUNT_EXPORT_PATH = "/api/account/export";
 
 export interface Report {
   id: string;

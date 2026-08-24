@@ -16,6 +16,10 @@ import { TargetsController } from "./targets/targets.controller.js";
 import { TargetsService } from "./targets/targets.service.js";
 import { OverviewController } from "./overview/overview.controller.js";
 import { HealthController } from "./health/health.controller.js";
+import { AccountController } from "./account/account.controller.js";
+import { AccountService } from "./account/account.service.js";
+import { RetentionController } from "./account/retention.controller.js";
+import { RetentionService } from "./account/retention.service.js";
 
 @Module({
   controllers: [
@@ -29,6 +33,10 @@ import { HealthController } from "./health/health.controller.js";
     TargetsController,
     OverviewController,
     HealthController,
+    // Erasure + portability (GDPR art. 17 and 20) and the retention purge that
+    // makes the durations published in apps/web/lib/legal.ts enforceable.
+    AccountController,
+    RetentionController,
   ],
   providers: [
     PrismaService,
@@ -38,6 +46,8 @@ import { HealthController } from "./health/health.controller.js";
     TargetsService,
     SessionService,
     AuthGuard,
+    AccountService,
+    RetentionService,
   ],
 })
 export class AppModule {}

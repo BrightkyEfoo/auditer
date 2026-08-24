@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Delete,
   Query,
   Param,
   Body,
@@ -15,6 +16,7 @@ import { z } from "zod";
 import { AuthGuard, Auth, type AuthContext } from "../auth/auth.guard.js";
 import { PrismaService } from "../infra/prisma.service.js";
 import { ZodBody } from "../common/zod.pipe.js";
+import { dropObjects } from "../common/artifact-purge.js";
 import { kekFromEnv, seal, open as openSecret } from "@auditer/crypto";
 import {
   installUrl,
@@ -245,5 +247,88 @@ export class ConnectionsController {
         update: { isActive: true, fullName: body.fullName },
       });
     });
+  }
+
+  /**
+   * Revoke a connection: destroy the encrypted tokens, then remove the row and
+   * everything that depended on this access.
+   *
+   * Revoking here does NOT reach into GitHub or GitLab — the installation or
+   * the OAuth grant lives on their side and only the user can withdraw it
+   * there. What this endpoint guarantees is the half we control: after it
+   * returns, no ciphertext of yours remains in our database, so nothing here
+   * can be decrypted into a working credential, whatever happens upstream.
+   *
+   * The imported repositories go too, and that is not incidental damage:
+   * `Repository.connectionId` is `onDelete: Cascade` in the schema, so removing
+   * the connection removes them whatever we do. Their runs are deleted
+   * EXPLICITLY first for the same reason as in ReposController.remove — the
+   * runs would otherwise survive with a null repository, holding findings the
+   * user believes they just erased.
+   */
+  @Delete(":id")
+  @UseGuards(AuthGuard)
+  @HttpCode(204)
+  async revoke(@Auth() auth: AuthContext, @Param("id") id: string): Promise<void> {
+    const org = auth.organizationId;
+
+    const plan = await this.prisma.tenant(org, async (tx) => {
+      const conn = await tx.connection.findFirst({ where: { id, organizationId: org } });
+      if (!conn) throw new NotFoundException("connection not found");
+
+      // Overwrite the ciphertext in its own statement, before anything below
+      // can fail. The row is about to disappear anyway, but a revocation that
+      // only takes effect if a later statement commits is not a revocation.
+      await tx.connection.update({
+        where: { id },
+        data: {
+          encPat: null,
+          encRefreshToken: null,
+          tokenExpiresAt: null,
+          status: "revoked",
+        },
+      });
+
+      const repos = await tx.repository.findMany({
+        where: { connectionId: id, organizationId: org },
+        select: { id: true },
+      });
+      const repoIds = repos.map((r) => r.id);
+
+      const runs =
+        repoIds.length > 0
+          ? await tx.auditRun.findMany({
+              where: { organizationId: org, repositoryId: { in: repoIds } },
+              select: { id: true },
+            })
+          : [];
+
+      const artifacts =
+        runs.length > 0
+          ? await tx.artifact.findMany({
+              where: { organizationId: org, auditRunId: { in: runs.map((r) => r.id) } },
+              select: { storageKey: true },
+            })
+          : [];
+
+      return { repoIds, keys: artifacts.map((a) => a.storageKey) };
+    });
+
+    await dropObjects(plan.keys);
+
+    await this.prisma.tenant(org, async (tx) => {
+      if (plan.repoIds.length > 0) {
+        await tx.auditRun.deleteMany({
+          where: { organizationId: org, repositoryId: { in: plan.repoIds } },
+        });
+      }
+      await tx.connection.deleteMany({ where: { id, organizationId: org } });
+    });
+
+    // webhook_events references the connection by a plain column: no relation,
+    // no cascade, and no RLS policy either (see prisma/sql/rls.sql). Left alone
+    // it would keep delivery payload references for a connection that no longer
+    // exists.
+    await this.prisma.webhookEvent.deleteMany({ where: { connectionId: id } });
   }
 }

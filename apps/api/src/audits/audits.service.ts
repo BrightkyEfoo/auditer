@@ -9,6 +9,7 @@ import { cancelFlag } from "@auditer/queue";
 import { PrismaService } from "../infra/prisma.service.js";
 import { QueueService } from "../infra/queue.service.js";
 import { RedisService } from "../infra/redis.service.js";
+import { dropObjects } from "../common/artifact-purge.js";
 import type { AuthContext } from "../auth/auth.guard.js";
 
 export interface CreateAuditInput {
@@ -183,5 +184,38 @@ export class AuditsService {
     await this.get(auth, id); // authorize + existence
     await this.redis.client.set(cancelFlag(id), "1", "EX", 3600);
     return { ok: true };
+  }
+
+  /**
+   * Delete a run and everything it produced: scans, findings, pillar results,
+   * reports and artifacts (rows via cascade, bytes explicitly).
+   *
+   * The cancel flag is raised FIRST and that ordering is load-bearing. A run
+   * still on the worker keeps writing findings against `auditRunId`; if the row
+   * disappears underneath it, the insert fails on the foreign key and BullMQ
+   * retries the job forever. Cancelling first makes the worker stop at its next
+   * poll, so the user's deletion does not become an ops incident.
+   *
+   * Triage decisions are NOT deleted: they are keyed on the fingerprint and
+   * scoped to the organization, not to the run, precisely so a false-positive
+   * call survives re-scans. Deleting a run must not silently un-triage the next
+   * one. They go with the account, or with an explicit triage change.
+   */
+  async remove(auth: AuthContext, id: string): Promise<void> {
+    await this.get(auth, id); // authorize + existence
+
+    await this.redis.client.set(cancelFlag(id), "1", "EX", 3600);
+
+    const keys = await this.prisma.tenant(auth.organizationId, (tx) =>
+      tx.artifact.findMany({
+        where: { auditRunId: id, organizationId: auth.organizationId },
+        select: { storageKey: true },
+      }),
+    );
+    await dropObjects(keys.map((k) => k.storageKey));
+
+    await this.prisma.tenant(auth.organizationId, (tx) =>
+      tx.auditRun.deleteMany({ where: { id, organizationId: auth.organizationId } }),
+    );
   }
 }

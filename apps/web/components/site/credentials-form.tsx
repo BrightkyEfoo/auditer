@@ -13,7 +13,7 @@ const MIN_PASSWORD = 12;
  * it is stored with the acceptance, so a mismatch would record consent to a
  * document the user never saw.
  */
-const TERMS_VERSION = "1.0";
+const TERMS_VERSION = "1.1";
 
 /** api error codes → wording the user can act on. Never leak which half failed. */
 const MESSAGES: Record<string, string> = {

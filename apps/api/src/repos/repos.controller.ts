@@ -2,7 +2,9 @@ import {
   Controller,
   Post,
   Get,
+  Delete,
   Body,
+  Param,
   HttpCode,
   UseGuards,
   NotFoundException,
@@ -11,6 +13,7 @@ import { z } from "zod";
 import { AuthGuard, Auth, type AuthContext } from "../auth/auth.guard.js";
 import { PrismaService } from "../infra/prisma.service.js";
 import { ZodBody } from "../common/zod.pipe.js";
+import { dropObjects } from "../common/artifact-purge.js";
 
 const ImportRepoBody = z.object({
   connectionId: z.string(),
@@ -65,6 +68,57 @@ export class ReposController {
         },
         update: { isActive: true, fullName: body.fullName },
       });
+    });
+  }
+
+  /**
+   * Remove an imported repository AND every run made on it.
+   *
+   * The runs are deleted EXPLICITLY, and that is the whole point of this
+   * handler. `AuditRun.repositoryId` is `onDelete: SetNull` in the schema, so
+   * dropping the repository alone would leave every run behind with a null
+   * repository — visible in the list, unnameable, and still holding the
+   * findings the user just asked us to erase. Deleting the runs first makes
+   * their scans, findings, pillar results, reports and artifact rows cascade.
+   *
+   * Targets keep their SetNull: a verified domain is an asset of the
+   * organization, not of the repository it happened to be linked to.
+   */
+  @Delete(":id")
+  @HttpCode(204)
+  async remove(@Auth() auth: AuthContext, @Param("id") id: string): Promise<void> {
+    const keys = await this.prisma.tenant(auth.organizationId, async (tx) => {
+      const repo = await tx.repository.findFirst({
+        where: { id, organizationId: auth.organizationId },
+      });
+      if (!repo) throw new NotFoundException("repository not found");
+
+      const runs = await tx.auditRun.findMany({
+        where: { repositoryId: id, organizationId: auth.organizationId },
+        select: { id: true },
+      });
+      if (runs.length === 0) return [];
+
+      const artifacts = await tx.artifact.findMany({
+        where: {
+          organizationId: auth.organizationId,
+          auditRunId: { in: runs.map((r) => r.id) },
+        },
+        select: { storageKey: true },
+      });
+      return artifacts.map((a) => a.storageKey);
+    });
+
+    await dropObjects(keys);
+
+    await this.prisma.tenant(auth.organizationId, async (tx) => {
+      await tx.auditRun.deleteMany({
+        where: { repositoryId: id, organizationId: auth.organizationId },
+      });
+      // deleteMany, not delete: the org filter is repeated here so a race that
+      // slipped the row into another tenant between the two transactions still
+      // matches nothing rather than deleting it.
+      await tx.repository.deleteMany({ where: { id, organizationId: auth.organizationId } });
     });
   }
 }

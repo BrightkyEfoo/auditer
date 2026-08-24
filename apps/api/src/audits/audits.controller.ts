@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Delete,
   Body,
   Param,
   Query,
@@ -69,5 +70,12 @@ export class AuditsController {
   @HttpCode(200)
   cancel(@Auth() auth: AuthContext, @Param("id") id: string) {
     return this.audits.cancel(auth, id);
+  }
+
+  /** Erase a run and its findings. Irreversible — see AuditsService.remove. */
+  @Delete(":id")
+  @HttpCode(204)
+  remove(@Auth() auth: AuthContext, @Param("id") id: string): Promise<void> {
+    return this.audits.remove(auth, id);
   }
 }

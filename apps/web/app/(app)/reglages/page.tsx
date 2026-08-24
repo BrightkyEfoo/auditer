@@ -2,7 +2,8 @@ import Link from "next/link";
 import { PageHead } from "@/components/app/shell";
 import { ButtonLink, Label, Chip } from "@/components/ui";
 import { getSession, apiGet } from "@/lib/session";
-import type { Connection } from "@/lib/api";
+import { ACCOUNT_EXPORT_PATH, type Connection } from "@/lib/api";
+import { DeleteAccount, RevokeConnection } from "./account-actions";
 
 export const dynamic = "force-dynamic";
 
@@ -12,13 +13,21 @@ const PROVIDER_FR: Record<string, string> = {
   gitlab_pat: "GitLab (jeton personnel)",
 };
 
-/** What we hold, where it lives, and how to get rid of it — on one page. */
+/**
+ * What we hold, where it lives, and how to get rid of it — on one page.
+ *
+ * These durations must stay identical to the ones published in
+ * apps/web/lib/legal.ts and to the constants in the api's RetentionService.
+ * Three copies of a number is two too many, but the middle one is a legal
+ * document and the last one is a purge: they are checked against each other by
+ * hand, and both files say so.
+ */
 const RETENTION = [
   ["Code source cloné", "Jamais conservé — détruit à la fin du relevé"],
-  ["Findings et rapports", "24 mois"],
-  ["Journaux d'exécution des scanners", "90 jours"],
-  ["Jetons d'accès aux dépôts", "Chiffrés, jusqu'à révocation"],
-  ["Compte", "Tant qu'il est actif, puis 30 jours"],
+  ["Findings, rapports et relevés", "24 mois — purge manuelle"],
+  ["Journaux d'exécution des scanners", "90 jours — purge manuelle"],
+  ["Jetons d'accès aux dépôts", "Chiffrés, détruits à la révocation"],
+  ["Compte", "Tant qu'il est actif — suppression immédiate"],
 ];
 
 export default async function SettingsPage() {
@@ -72,31 +81,37 @@ export default async function SettingsPage() {
           </p>
         ) : (
           <ul className="mt-6 border-t border-line">
-            {connections.map((c) => (
-              <li
-                key={c.id}
-                className="flex flex-wrap items-center justify-between gap-4 border-b border-line py-4"
-              >
-                <div>
-                  <p className="font-mono text-data text-mineral">
-                    {PROVIDER_FR[c.provider] ?? c.provider}
-                    {c.externalAccountId ? ` · ${c.externalAccountId}` : ""}
-                  </p>
-                  <p className="mt-0.5 font-mono text-label uppercase text-mute">
-                    jeton chiffré AES-256-GCM · clé maîtresse en coffre
-                  </p>
-                </div>
-                <Chip tone={c.status === "active" ? "acid" : "warn"}>{c.status}</Chip>
-              </li>
-            ))}
+            {connections.map((c) => {
+              const label = `${PROVIDER_FR[c.provider] ?? c.provider}${
+                c.externalAccountId ? ` · ${c.externalAccountId}` : ""
+              }`;
+              return (
+                <li
+                  key={c.id}
+                  className="flex flex-wrap items-center justify-between gap-4 border-b border-line py-4"
+                >
+                  <div>
+                    <p className="font-mono text-data text-mineral">{label}</p>
+                    <p className="mt-0.5 font-mono text-label uppercase text-mute">
+                      jeton chiffré AES-256-GCM · clé maîtresse en coffre
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <Chip tone={c.status === "active" ? "acid" : "warn"}>{c.status}</Chip>
+                    <RevokeConnection connectionId={c.id} label={label} />
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         )}
 
         <p className="mt-5 max-w-[70ch] text-data text-mute">
-          La révocation se fait du côté du fournisseur : désinstallez l&apos;application GitHub
-          depuis les réglages de votre compte ou de votre organisation, ou retirez
-          l&apos;autorisation dans GitLab. L&apos;accès cesse immédiatement, et le jeton chiffré
-          devient inutilisable.
+          Révoquer ici détruit le jeton chiffré que nous détenons et retire les dépôts importés
+          par cet accès ainsi que leurs relevés. Cela ne désinstalle pas l&apos;application chez
+          le fournisseur : pour couper l&apos;accès à la source, désinstallez aussi
+          l&apos;application GitHub depuis votre compte ou votre organisation, ou retirez
+          l&apos;autorisation dans GitLab.
         </p>
       </section>
 
@@ -113,8 +128,10 @@ export default async function SettingsPage() {
             </li>
           ))}
         </ul>
-        <p className="mt-5 text-data text-mute">
-          Le détail figure dans la{" "}
+        <p className="mt-5 max-w-[70ch] text-data text-mute">
+          Les deux purges signalées « manuelle » sont écrites et appliquent bien ces durées,
+          mais aucun ordonnanceur ne les déclenche encore : nous les lançons à la main. Le
+          détail figure dans la{" "}
           <Link href="/legal/confidentialite" className="ul-draw text-acid">
             politique de confidentialité
           </Link>
@@ -122,23 +139,46 @@ export default async function SettingsPage() {
         </p>
       </section>
 
+      <section className="border-b border-line px-6 py-8 lg:px-10">
+        <h2 className="h-md">Exporter vos données</h2>
+        <p className="mt-4 max-w-[70ch] text-data text-mute">
+          Un fichier JSON contenant votre compte, votre organisation, vos connexions, vos
+          dépôts, vos relevés, vos findings, vos rapports et vos décisions de triage. Les jetons
+          d&apos;accès n&apos;y figurent pas, et votre code source non plus — il n&apos;est
+          jamais conservé. C&apos;est le droit à la portabilité prévu par le RGPD.
+        </p>
+        <div className="mt-6">
+          {/* Un lien, pas un bouton : la réponse est une pièce jointe, le
+              navigateur l'enregistre directement. */}
+          <ButtonLink href={ACCOUNT_EXPORT_PATH} download>
+            Télécharger l&apos;export JSON
+          </ButtonLink>
+        </div>
+      </section>
+
       <section className="px-6 py-8 lg:px-10">
         <Label className="text-critical">Zone sensible</Label>
         <h2 className="h-md mt-3">Supprimer le compte</h2>
         <p className="mt-4 max-w-[70ch] text-data text-mute">
-          La suppression efface le compte, l&apos;organisation, les dépôts importés, les relevés
-          et les rapports. Les jetons d&apos;accès sont détruits immédiatement. L&apos;opération
-          est irréversible et n&apos;est pas encore automatisée : écrivez-nous et nous
-          l&apos;exécutons sous 30 jours, conformément à la politique de confidentialité.
+          La suppression efface immédiatement le compte, l&apos;organisation, les dépôts
+          importés, les relevés, les findings et les rapports, ainsi que les fichiers stockés
+          qui s&apos;y rattachent. Les jetons d&apos;accès chiffrés sont détruits. Il n&apos;y a
+          ni corbeille ni délai de grâce : rien ne sera restituable ensuite. Exportez vos
+          données avant, si vous en avez besoin.
         </p>
-        <div className="mt-6">
-          <ButtonLink
-            href="mailto:privacy@auditer.brightkyefoo.cm?subject=Suppression%20de%20compte"
-            variant="danger"
-          >
-            Demander la suppression
-          </ButtonLink>
-        </div>
+        <p className="mt-3 max-w-[70ch] text-data text-mute">
+          Seules survivent les attestations d&apos;autorisation des scans réseau que vous avez
+          lancés : elles protègent les cibles de ces scans, qui sont des tiers, et expirent
+          d&apos;elles-mêmes au bout de 24 mois.
+        </p>
+
+        {session?.user?.email ? (
+          <DeleteAccount email={session.user.email} />
+        ) : (
+          <p className="mt-6 border border-dashed border-line px-5 py-6 font-mono text-label uppercase text-mute">
+            session illisible — rechargez la page pour supprimer le compte
+          </p>
+        )}
       </section>
     </>
   );
