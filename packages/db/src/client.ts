@@ -10,8 +10,22 @@ declare global {
   var __auditerPrisma: PrismaClient | undefined;
 }
 
-export function createPrisma(): PrismaClient {
-  const url = process.env.DATABASE_APP_URL ?? process.env.DATABASE_URL;
+export interface CreatePrismaOptions {
+  /**
+   * Connect as the OWNER role, which is exempt from row level security.
+   *
+   * Reserved for the operations that cannot be tenant-scoped by construction —
+   * creating a user's first organization, and DDL. Everything else must use the
+   * default connection: RLS is the backstop that catches a forgotten WHERE, and
+   * it only catches it on a role that is subject to it.
+   */
+  privileged?: boolean;
+}
+
+export function createPrisma(options: CreatePrismaOptions = {}): PrismaClient {
+  const url = options.privileged
+    ? (process.env.DATABASE_URL ?? process.env.DATABASE_APP_URL)
+    : (process.env.DATABASE_APP_URL ?? process.env.DATABASE_URL);
   return new PrismaClient({
     datasources: url ? { db: { url } } : undefined,
     log:

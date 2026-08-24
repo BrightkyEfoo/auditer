@@ -329,6 +329,16 @@ model AuditRun {
   scopeConfig    Json?
   status         AuditStatus  @default(queued)
   scoringVersion String?
+  /// Date of the EPSS / CISA-KEV snapshot this run's findings were enriched
+  /// against (the EPSS feed's own `score_date`, not the worker's clock).
+  ///
+  /// NOT a detail: EPSS is a rolling 30-day forecast and the KEV catalog grows
+  /// daily, so the same commit analysed on two dates legitimately yields two
+  /// different exploitation numbers. Without this column the run is not
+  /// reproducible and the "deterministic audit" claim is false. Null means the
+  /// feeds were absent or stale and no enrichment was applied — which is also
+  /// a fact the report must be able to state.
+  vulnFeedsSnapshot DateTime?
   riskScore      Int?
   createdById    String?
   startedAt      DateTime?
@@ -416,7 +426,33 @@ model Finding {
   location Json? // CodeLocation
   target   Json? // WebLocation (DAST)
   package  Json? // PackageRef (SCA)
-  vuln     Json? // VulnEnrichment (EPSS/KEV)
+  vuln     Json? // VulnEnrichment (EPSS/KEV) — full blob, incl. which alias matched
+
+  // ── Exploitation signals, promoted out of `vuln` into real columns ───────
+  // Provenance: FIRST.org EPSS (free with attribution) and the CISA KEV catalog
+  // (US-government public domain), read from a checksummed offline snapshot;
+  // NEVER produced by the AI and never fetched from inside a scanner sandbox.
+  //
+  // Columns rather than JSON because these are the ordering keys for "what do I
+  // fix first" — sorting 340 findings by a JSON path is not something to ask of
+  // Postgres on every dashboard load.
+  //
+  // Every value is dated by AuditRun.vulnFeedsSnapshot and is only true as of
+  // that day. All NULLABLE, and null is meaningful: it says the feeds did not
+  // score this finding (no CVE, unknown CVE, or feeds unavailable). It does NOT
+  // mean a zero probability. In particular `kevListed` is deliberately Boolean?
+  // and not `@default(false)` — false asserts "checked, absent from the
+  // catalog", null admits "never checked".
+  /// EPSS probability of exploitation within 30 days, 0-1.
+  epssScore      Float?
+  /// Percentile rank of that probability among all scored CVEs, 0-1.
+  epssPercentile Float?
+  /// Present in the CISA Known Exploited Vulnerabilities catalog.
+  kevListed      Boolean?
+  /// Date CISA added the CVE to the KEV catalog (feed granularity is the day).
+  kevDateAdded   DateTime?
+  /// CISA flags the CVE as used in ransomware campaigns.
+  kevRansomware  Boolean?
 
   evidence   String? // redacted
   references String[] @default([])
@@ -451,6 +487,9 @@ model Finding {
 
   @@index([organizationId])
   @@index([auditRunId, severity])
+  /// Serves the prioritized listing (KEV first, then EPSS desc) without a sort
+  /// over the whole run — the default ordering of the findings dashboard.
+  @@index([auditRunId, kevListed, epssScore])
   @@index([fingerprint])
   @@map("findings")
 }

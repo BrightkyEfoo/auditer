@@ -7,6 +7,7 @@ import {
   DockerGvisorRunner,
   runScan,
   aggregate,
+  collectKloc,
   AiClient,
   type ScanContext,
   type RunScanResult,
@@ -154,6 +155,9 @@ async function processAudit(job: AuditJob): Promise<void> {
     const allRaw: RawFinding[] = [];
     const fpToScanId = new Map<string, string>();
     const pillarsRun = new Set<Pillar>();
+    // Measurements from scanners that produce them (scc). Kept per-scan so the
+    // kLOC that normalized the score is traceable to the tool that measured it.
+    const measured: RunScanResult[] = [];
 
     for (const adapter of adapters) {
       if (await isCanceled(auditRunId)) {
@@ -188,9 +192,14 @@ async function processAudit(job: AuditJob): Promise<void> {
           status: result.skipped ? "skipped" : result.exitClass === "fail" ? "failed" : "success",
           exitCode: result.exitCode,
           exitClass: result.exitClass,
+          // Scan.stats already exists as a Json column — the measurements land
+          // there rather than in a new table, so the numbers behind a score stay
+          // auditable per scanner without a schema change.
+          stats: result.metrics,
         },
       );
       if (result.exitClass === "partial") partialPillars.add(adapter.pillar);
+      if (result.metrics) measured.push(result);
 
       for (const f of result.findings) {
         allRaw.push(f);
@@ -211,16 +220,34 @@ async function processAudit(job: AuditJob): Promise<void> {
     // Load persisted triage so scoring respects false-positives across runs.
     const triage = await loadTriage(organizationId);
 
+    // Size normalization. undefined when the quality pillar was not requested
+    // (or scc failed): scoring then falls back to ASSUMED_KLOC and stamps the
+    // run "assumed" — we must NOT substitute a guess here, or the report would
+    // present an unnormalized score as a normalized one.
+    const kloc = collectKloc(measured);
+
     const agg = await aggregate({
       organizationId,
       auditRunId,
       rawFindings: allRaw,
       pillarsRun: [...pillarsRun],
       partialPillars,
+      kloc,
       triageByFingerprint: triage,
       ai,
       enableAi: Boolean(ai),
+      // Degraded enrichment is a fact about the report, not a silent detail:
+      // surface it in the run log so a relevé produced without exploitability
+      // data is visibly a relevé produced without exploitability data.
+      onWarning: (m) => void publisher.log(auditRunId, `vuln feeds: ${m}`),
     });
+
+    await publisher.log(
+      auditRunId,
+      agg.score.klocSource === "measured"
+        ? `size ${agg.score.kloc.toFixed(1)} kLOC (measured by scc) — score density-normalized`
+        : `size not measured (quality pillar absent) — score uses the ${agg.score.kloc} kLOC fallback, NOT normalized`,
+    );
 
     await setStatus(auditRunId, organizationId, "reporting");
     await publisher.status(auditRunId, "reporting");
@@ -229,7 +256,13 @@ async function processAudit(job: AuditJob): Promise<void> {
     await persistResults(organizationId, auditRunId, agg, fpToScanId);
 
     const finalStatus = partialPillars.size > 0 ? "completed_with_errors" : "done";
-    await finalize(auditRunId, organizationId, finalStatus, agg.score.overall);
+    await finalize(
+      auditRunId,
+      organizationId,
+      finalStatus,
+      agg.score.overall,
+      agg.vulnFeedsSnapshot,
+    );
     await publisher.done(auditRunId, finalStatus, agg.score.overall);
   } catch (err) {
     await finalize(auditRunId, organizationId, "failed");
@@ -260,6 +293,13 @@ async function finalize(
   organizationId: string,
   status: string,
   riskScore?: number,
+  /**
+   * Date of the EPSS/KEV snapshot that informed this run. Stamped on the run,
+   * not derived at read time: the report has to state the data AS IT WAS when
+   * the score was computed, otherwise re-reading an old relevé silently
+   * reinterprets it against today's feeds.
+   */
+  vulnFeedsSnapshot?: string | null,
 ): Promise<void> {
   await withTenant(prisma, organizationId, (tx) =>
     tx.auditRun.update({
@@ -268,6 +308,7 @@ async function finalize(
         status: status as never,
         finishedAt: new Date(),
         ...(riskScore !== undefined ? { riskScore } : {}),
+        ...(vulnFeedsSnapshot ? { vulnFeedsSnapshot: new Date(vulnFeedsSnapshot) } : {}),
       },
     }),
   );
@@ -279,7 +320,13 @@ async function recordScan(
   scannerId: string,
   pillar: Pillar,
   tool: string,
-  data: { status: string; exitCode?: number; exitClass?: string; error?: unknown },
+  data: {
+    status: string;
+    exitCode?: number;
+    exitClass?: string;
+    error?: unknown;
+    stats?: Record<string, number>;
+  },
 ): Promise<string> {
   return withTenant(prisma, organizationId, async (tx) => {
     const scan = await tx.scan.upsert({
@@ -294,6 +341,7 @@ async function recordScan(
         exitCode: data.exitCode,
         exitClass: data.exitClass as never,
         error: data.error as never,
+        stats: data.stats as never,
         finishedAt: new Date(),
       },
       update: {
@@ -301,6 +349,7 @@ async function recordScan(
         exitCode: data.exitCode,
         exitClass: data.exitClass as never,
         error: data.error as never,
+        stats: data.stats as never,
         finishedAt: new Date(),
       },
     });
@@ -408,6 +457,19 @@ async function persistResults(
  * Chromium container printing this exact HTML is the one remaining infra step;
  * the HTML artifact is already a complete, downloadable, print-ready report.)
  */
+/**
+ * Renders the persisted CodeLocation blob as `path:line` for the report. A
+ * finding a reader cannot locate is a finding they cannot act on, and the
+ * shape differs per pillar (code path vs DAST URL), so unknown shapes yield
+ * null rather than a half-formed string.
+ */
+function locationLabel(loc: unknown): string | null {
+  if (!loc || typeof loc !== "object") return null;
+  const l = loc as { path?: unknown; startLine?: unknown };
+  if (typeof l.path !== "string" || l.path.length === 0) return null;
+  return typeof l.startLine === "number" ? `${l.path}:${l.startLine}` : l.path;
+}
+
 async function renderReport(job: AuditJob): Promise<void> {
   const { organizationId, auditRunId } = job;
   const reportId = (job.scopeConfig?.reportId as string) ?? undefined;
@@ -429,12 +491,30 @@ async function renderReport(job: AuditJob): Promise<void> {
       orderBy: { createdAt: "desc" },
     });
 
+    // Lines of code, recovered from whichever scan actually measured them.
+    // Read back from Scan.stats rather than recomputed: the report must state
+    // the number that NORMALIZED THIS SCORE, not one measured later against a
+    // tree that may have moved.
+    const locCode = scans
+      .map((s) => (s.stats as Record<string, number> | null)?.["loc.code"])
+      .find((n): n is number => typeof n === "number" && n > 0);
+
     const html = buildReportHtml({
       runId: auditRunId,
       fullName: repo?.fullName ?? null,
       commitSha: run.commitSha,
+      ref: run.ref,
       riskScore: run.riskScore,
       scoringVersion: run.scoringVersion,
+      startedAt: run.startedAt?.toISOString() ?? null,
+      finishedAt: run.finishedAt?.toISOString() ?? null,
+      // What was ASKED for, which is what makes an unexecuted pillar visible.
+      // Deriving this from the scans that ran would erase exactly the gap the
+      // report exists to disclose.
+      requestedPillars: run.pillars,
+      kloc: locCode != null ? locCode / 1000 : null,
+      klocMeasured: locCode != null,
+      vulnFeedsSnapshot: run.vulnFeedsSnapshot?.toISOString() ?? null,
       pillars: pillars.map((p) => ({ pillar: p.pillar, score: p.score, grade: p.grade })),
       summary: (reportRow?.summary as ExecutiveSummary | null) ?? null,
       findings: findings.map((f) => ({
@@ -448,8 +528,19 @@ async function renderReport(job: AuditJob): Promise<void> {
         aiExplanation: f.aiExplanation,
         aiRemediation: f.aiRemediation,
         aiNeedsHuman: f.aiNeedsHuman,
+        epssScore: f.epssScore,
+        kevListed: f.kevListed,
+        location: locationLabel(f.location),
       })),
-      scanners: scans.map((s) => ({ tool: s.tool, pillar: s.pillar })),
+      scanners: scans.map((s) => ({
+        tool: s.tool,
+        pillar: s.pillar,
+        version: s.toolVersion,
+        imageRef: s.imageDigest,
+        status: s.status,
+        findingCount: findings.filter((f) => f.scanId === s.id).length,
+        error: s.error,
+      })),
       generatedAt: new Date().toISOString(),
     });
 
@@ -468,6 +559,11 @@ async function renderReport(job: AuditJob): Promise<void> {
         contentType: "text/html",
         sizeBytes: put.sizeBytes,
         checksum: put.checksum,
+        // Stamp the published retention on the row at creation time. The policy
+        // (apps/web/lib/legal.ts) keeps reports 24 months; a duration that is
+        // only written in a document cannot be enforced, and this column is
+        // what apps/api/src/account/retention.service.ts actually purges on.
+        retentionExpiresAt: new Date(Date.now() + 730 * 24 * 60 * 60 * 1000),
       },
     });
 

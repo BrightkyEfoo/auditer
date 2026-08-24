@@ -15,6 +15,7 @@ export { computeScore, SCORING_VERSION } from "./scoring/index.js";
 export {
   runScan,
   aggregate,
+  collectKloc,
   type RunScanResult,
   type AggregateInput,
   type AggregateOutput,
@@ -26,10 +27,46 @@ export { GitleaksAdapter } from "./scanners/gitleaks.js";
 export { OsvScannerAdapter } from "./scanners/osv-scanner.js";
 export { SemgrepAdapter } from "./scanners/semgrep.js";
 export { JscpdAdapter } from "./scanners/jscpd.js";
+export { SccAdapter, SCC_METRIC_KEYS } from "./scanners/scc.js";
 export { TrivyConfigAdapter } from "./scanners/trivy-config.js";
 export { HadolintAdapter } from "./scanners/hadolint.js";
 export { NucleiAdapter } from "./scanners/nuclei.js";
 export { LighthouseAdapter } from "./scanners/lighthouse.js";
+
+// Vulnerability feed enrichment (EPSS + CISA KEV) — deterministic, offline,
+// control-plane only. Never called from inside a scanner sandbox.
+export {
+  loadVulnFeeds,
+  enrichWithVulnFeeds,
+  enrichFindingsFromFeeds,
+  prioritizeFindings,
+  comparePriority,
+  summarizeExploitability,
+  resetVulnFeedsCache,
+  parseEpssCsv,
+  parseKevJson,
+  VulnFeedsIndex,
+  VulnFeedFormatError,
+  EPSS_MATERIALITY_FLOOR,
+  EPSS_HIGH_THRESHOLD,
+  DEFAULT_MAX_SNAPSHOT_AGE_DAYS,
+  VULN_FEEDS_PATH_ENV,
+  VULN_FEEDS_MANIFEST_VERSION,
+  type VulnFeedsManifest,
+  type VulnFeedsWarning,
+  type VulnFeedsWarningCode,
+  type LoadVulnFeedsOptions,
+  type LoadVulnFeedsResult,
+  type VulnEnrichable,
+  type VulnEnrichmentResult,
+  type VulnEnrichmentStats,
+  type PrioritizableFinding,
+  type PrioritizeOptions,
+  type ExploitabilitySummary,
+  type EpssScore,
+  type KevRecord,
+} from "./enrich/vuln-feeds.js";
+export { refreshVulnFeeds, type RefreshOptions, type RefreshResult } from "./enrich/refresh-feeds.js";
 
 // AI layer
 export { AiClient, MODELS, untrusted, type UsageRecord } from "./ai/client.js";

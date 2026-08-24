@@ -21,6 +21,20 @@ export interface ScanContext {
   target?: { url: string; scopeAllowlist?: string[] };
 }
 
+/**
+ * Structured MEASUREMENTS a scanner produces — a flat, dotted-key bag of
+ * numbers (`loc.code`, `loc.complexity`, ...). Deliberately not findings:
+ * a measurement has no severity, no location and no remediation, so forcing it
+ * through RawFinding would mean inventing all three.
+ *
+ * Flat `Record<string, number>` rather than a typed struct because the set of
+ * metrics grows per tool (scc today, lizard/ULOC tomorrow) while the transport
+ * — orchestrator → worker → `Scan.stats` Json column — must stay indifferent to
+ * which tool produced what. Consumers look up the exact keys they understand
+ * and ignore the rest.
+ */
+export type ScanMetrics = Record<string, number>;
+
 export interface ScannerAdapter {
   /** Stable id — part of the (auditRunId, scannerId) idempotency key. */
   readonly id: string;
@@ -55,4 +69,24 @@ export interface ScannerAdapter {
    * just delegates to it. Fingerprints are assigned by the normalizer.
    */
   parse(result: SandboxResult, ctx: ScanContext): Promise<RawFinding[]>;
+
+  /**
+   * OPTIONAL second output channel: measurements, not findings.
+   *
+   * Kept as a separate optional member rather than widening `parse` to return
+   * `{ findings, metrics }` for two reasons. First, `parse`'s contract — raw
+   * output in, canonical RawFindings out — is what makes the SARIF normalizer a
+   * one-line delegation in most adapters; wrapping it in an envelope would churn
+   * all eight adapters to serve one. Second, producing measurements is a real
+   * capability distinction, not an incidental field: `typeof a.measure ===
+   * "function"` says "this tool weighs the repo", which is exactly what the
+   * orchestrator needs to know when deciding whether a run's score could be
+   * size-normalized at all.
+   *
+   * Returns undefined when the output was unusable (truncated, malformed). A
+   * missing measurement must never be silently replaced by a partial one — a
+   * half-counted repo yields a too-small kLOC, which INFLATES the density factor
+   * and quietly over-penalizes the repo.
+   */
+  measure?(result: SandboxResult, ctx: ScanContext): Promise<ScanMetrics | undefined>;
 }

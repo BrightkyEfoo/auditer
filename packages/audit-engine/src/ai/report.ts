@@ -59,6 +59,11 @@ Hard rules:
 function buildContext(score: RunScore, top: Finding[]): string {
   const lines: string[] = [
     `OVERALL GRADE: ${score.grade} (score ${score.overall}/100, scoring v${score.scoringVersion})`,
+    // State the normalization, including when it did not happen: an unqualified
+    // grade over an assumed repo size would read as a measured one.
+    score.klocSource === "measured"
+      ? `Size: ${score.kloc.toFixed(1)} kLOC (measured) — the score is density-normalized for this size.`
+      : `Size: NOT MEASURED (the quality pillar did not run). The score used a ${score.kloc} kLOC placeholder, so it is not size-normalized — say so if you comment on repository size.`,
     `Severity totals: ${JSON.stringify(score.counts)}`,
     `Pillar grades: ${score.pillars.map((p) => `${p.pillar}=${p.grade}(${p.score})`).join(", ")}`,
     "",

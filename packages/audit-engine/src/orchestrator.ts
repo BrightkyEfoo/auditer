@@ -6,9 +6,11 @@ import type {
   RunScore,
   ExecutiveSummary,
 } from "@auditer/types";
-import type { ScannerAdapter, ScanContext } from "./ports/adapter.js";
+import type { ScannerAdapter, ScanContext, ScanMetrics } from "./ports/adapter.js";
 import type { SandboxRunner } from "./ports/sandbox.js";
 import { CONTAINER_REPO_PATH } from "./ports/sandbox.js";
+import { SCC_METRIC_KEYS } from "./scanners/scc.js";
+import { enrichFindingsFromFeeds } from "./enrich/vuln-feeds.js";
 import { dedupe, type DedupResult } from "./dedup/index.js";
 import { computeScore } from "./scoring/index.js";
 import { AiClient } from "./ai/client.js";
@@ -32,6 +34,8 @@ export interface RunScanResult {
   timedOut: boolean;
   durationMs: number;
   findings: RawFinding[];
+  /** Measurements, when the adapter produces any (see ScannerAdapter.measure). */
+  metrics?: ScanMetrics;
   skipped: boolean;
 }
 
@@ -72,6 +76,12 @@ export async function runScan(
   const findings =
     exitClass === "fail" ? [] : await adapter.parse(result, ctx);
 
+  // Measurements share that gate: a failed tool's stdout is not a measurement.
+  const metrics =
+    exitClass === "fail" || !adapter.measure
+      ? undefined
+      : await adapter.measure(result, ctx);
+
   return {
     ...base,
     exitClass,
@@ -79,8 +89,34 @@ export async function runScan(
     timedOut: result.timedOut,
     durationMs: result.durationMs,
     findings,
+    metrics,
     skipped: false,
   };
+}
+
+/**
+ * Fold the per-scan measurements of a run into the kLOC the score normalizes by.
+ *
+ * Lives here, not in the worker, so the metric key stays private to the engine:
+ * the worker should not have to know that "loc.code" is what scc calls its line
+ * count. Sums across scanners because a second measuring tool (lizard, ULOC) can
+ * be added without touching this. Returns undefined — never a default — when
+ * nothing measured anything; choosing the fallback is scoring's job, and only
+ * scoring can then label the result honestly as assumed rather than measured.
+ */
+export function collectKloc(
+  results: readonly Pick<RunScanResult, "metrics">[],
+): number | undefined {
+  let code = 0;
+  let measured = false;
+  for (const r of results) {
+    const v = r.metrics?.[SCC_METRIC_KEYS.code];
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) {
+      code += v;
+      measured = true;
+    }
+  }
+  return measured ? code / 1000 : undefined;
 }
 
 export interface AggregateInput {
@@ -90,12 +126,23 @@ export interface AggregateInput {
   rawFindings: RawFinding[];
   pillarsRun: Pillar[];
   partialPillars?: Set<Pillar>;
+  /**
+   * Measured thousands of lines of code (see `collectKloc`). Leave undefined
+   * when no scanner measured the repo — scoring then falls back and stamps the
+   * result `klocSource: "assumed"`.
+   */
   kloc?: number;
   /** Existing triage decisions, keyed by fingerprint (persist across runs). */
   triageByFingerprint?: Map<string, Finding["triageStatus"]>;
   ai?: AiClient;
   /** When false, skip the AI passes (dedup + score still run). */
   enableAi?: boolean;
+  /**
+   * Called for every degraded-enrichment condition (missing mount, stale
+   * snapshot, checksum mismatch). The worker forwards these to the run log so a
+   * report produced without exploitability data says so out loud.
+   */
+  onWarning?: (message: string) => void;
 }
 
 export interface AggregateOutput {
@@ -103,6 +150,12 @@ export interface AggregateOutput {
   dedup: DedupResult;
   score: RunScore;
   summary?: ExecutiveSummary;
+  /**
+   * `YYYY-MM-DD` of the EPSS/KEV snapshot that informed this run, or null when
+   * no enrichment happened. Persist it on the AuditRun: without it, two runs of
+   * the same commit can differ and the determinism claim is unverifiable.
+   */
+  vulnFeedsSnapshot: string | null;
 }
 
 /**
@@ -114,6 +167,21 @@ export interface AggregateOutput {
 export async function aggregate(input: AggregateInput): Promise<AggregateOutput> {
   const dedup = dedupe(input.rawFindings);
 
+  // Exploitability enrichment, BEFORE the model sees anything and before the
+  // score is computed. Order matters twice over: the model's explanation should
+  // be able to say "this one is actively exploited", and the snapshot date has
+  // to be recorded alongside the score it informed — a run whose feed date is
+  // unknown cannot claim a deterministic result.
+  //
+  // Runs on representatives only, like the AI pass: enriching the members we
+  // already collapsed would spend memory to produce rows nobody reads.
+  //
+  // A missing or stale snapshot degrades to unenriched findings plus warnings,
+  // never to a throw. A scan that fails because a data feed is a day late would
+  // be a worse product than one that says so.
+  const vuln = await enrichFindingsFromFeeds(dedup.representatives);
+  for (const w of vuln.warnings) input.onWarning?.(w.message);
+
   // AI enrichment on representatives only.
   const enableAi = input.enableAi ?? Boolean(input.ai);
   const enrichmentByFp = enableAi && input.ai
@@ -121,7 +189,7 @@ export async function aggregate(input: AggregateInput): Promise<AggregateOutput>
     : new Map();
 
   // Materialize persisted Findings from representatives (one row per group).
-  const findings: Finding[] = dedup.representatives.map((rep, i) => {
+  const findings: Finding[] = vuln.findings.map((rep, i) => {
     const group = dedup.groups[i]!;
     const triage = input.triageByFingerprint?.get(rep.fingerprint) ?? "open";
     const ai = enrichmentByFp.get(rep.fingerprint);
@@ -156,7 +224,7 @@ export async function aggregate(input: AggregateInput): Promise<AggregateOutput>
     summary = await synthesizeReport(input.ai, score, ranked);
   }
 
-  return { findings, dedup, score, summary };
+  return { findings, dedup, score, summary, vulnFeedsSnapshot: vuln.snapshotDate };
 }
 
 function severityRank(f: Finding): number {

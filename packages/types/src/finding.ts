@@ -54,11 +54,42 @@ export type PackageRef = z.infer<typeof PackageRef>;
 /**
  * Enrichment fields for SCA/CVE prioritization. Populated deterministically
  * from EPSS / CISA-KEV feeds, NOT by the AI.
+ *
+ * Every value here is dated by the feed snapshot the run used — see
+ * AuditRun.vulnFeedsSnapshot. An EPSS score is a 30-day forecast and the KEV
+ * catalog grows daily, so a value without its snapshot date is not reproducible
+ * and must never be presented as a standing fact.
+ *
+ * All fields optional on purpose: absent means "the feeds did not score this",
+ * which is NOT the same as a zero probability or a confirmed absence from KEV.
  */
 export const VulnEnrichment = z.object({
+  /** FIRST.org EPSS — probability of exploitation within 30 days, 0-1. */
   epssScore: z.number().min(0).max(1).optional(),
+  /** Rank of that probability among all scored CVEs, 0-1. */
   epssPercentile: z.number().min(0).max(1).optional(),
-  knownExploited: z.boolean().optional(), // CISA KEV
+  /**
+   * Which of the finding's CVE aliases produced the score above. A finding
+   * often carries several ids (CVE + GHSA + OSV); the report has to be able to
+   * say where the number came from.
+   */
+  epssCveId: z.string().optional(),
+
+  /** CISA KEV — listed as exploited in the wild. */
+  kevListed: z.boolean().optional(),
+  /** KEV catalog addition date, `YYYY-MM-DD` (the feed carries no time part). */
+  kevDateAdded: z.string().optional(),
+  /** CISA flags the CVE as used in ransomware campaigns. */
+  kevRansomware: z.boolean().optional(),
+  /** Which CVE alias matched the KEV catalog. */
+  kevCveId: z.string().optional(),
+
+  /**
+   * Legacy name for `kevListed`, predating the feed module. Kept because other
+   * code may already read it; the enricher writes both from one source so they
+   * can never disagree. Prefer `kevListed` in new code.
+   */
+  knownExploited: z.boolean().optional(),
 });
 export type VulnEnrichment = z.infer<typeof VulnEnrichment>;
 

@@ -4,6 +4,7 @@ import { GitleaksAdapter } from "./scanners/gitleaks.js";
 import { OsvScannerAdapter } from "./scanners/osv-scanner.js";
 import { SemgrepAdapter } from "./scanners/semgrep.js";
 import { JscpdAdapter } from "./scanners/jscpd.js";
+import { SccAdapter } from "./scanners/scc.js";
 import { TrivyConfigAdapter } from "./scanners/trivy-config.js";
 import { HadolintAdapter } from "./scanners/hadolint.js";
 import { NucleiAdapter } from "./scanners/nuclei.js";
@@ -46,7 +47,8 @@ export function defaultRegistry(): ScannerRegistry {
     .register(new OsvScannerAdapter()) // sca
     // Wave 2 — static analysis
     .register(new SemgrepAdapter()) // sast
-    .register(new JscpdAdapter()) // quality
+    .register(new JscpdAdapter()) // quality — duplication
+    .register(new SccAdapter()) // quality — LOC/complexity metrics (feeds kLOC)
     .register(new TrivyConfigAdapter()) // hygiene
     .register(new HadolintAdapter()) // hygiene
     // Wave 3 — network pillars (verified targets + egress-scoped only)

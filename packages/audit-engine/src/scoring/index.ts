@@ -6,6 +6,7 @@ import type {
   PillarResult,
   RunScore,
   SeverityCounts,
+  KlocSource,
 } from "@auditer/types";
 import {
   SCORING_VERSION,
@@ -13,6 +14,7 @@ import {
   SEVERITY_CEILING,
   GRADE_BANDS,
   SEVERITY_RANK,
+  ASSUMED_KLOC,
 } from "@auditer/types";
 
 /**
@@ -61,7 +63,12 @@ function dampedScore(rawDeduction: number): number {
 
 interface ScoreInput {
   findings: Pick<Finding, "pillar" | "severity" | "triageStatus" | "ai">[];
-  /** Thousands of lines of code, for density normalization (default 10). */
+  /**
+   * MEASURED thousands of lines of code (scc, via the quality pillar). Leave it
+   * undefined when nothing measured the repo — do NOT pass a guess here, or the
+   * result would be stamped "measured" and the report would claim a
+   * normalization that never happened.
+   */
   kloc?: number;
   /** Which pillars actually ran (so a skipped pillar isn't graded A by default). */
   pillarsRun: Pillar[];
@@ -70,7 +77,16 @@ interface ScoreInput {
 }
 
 export function computeScore(input: ScoreInput): RunScore {
-  const kloc = Math.max(input.kloc ?? 10, 1);
+  // A usable measurement is a finite, strictly positive number. Anything else
+  // (undefined, 0, NaN) means nobody weighed the repo — the run then uses the
+  // ASSUMED_KLOC fallback and says so via klocSource, instead of silently
+  // passing a placeholder off as a measurement.
+  const measured =
+    typeof input.kloc === "number" && Number.isFinite(input.kloc) && input.kloc > 0;
+  const klocSource: KlocSource = measured ? "measured" : "assumed";
+  // Floor at 1 kLOC: below that the density factor would blow past 2x and a
+  // 40-line repo would be graded harder than a monolith for the same finding.
+  const kloc = Math.max(measured ? input.kloc! : ASSUMED_KLOC, 1);
   const partial = input.partialPillars ?? new Set<Pillar>();
 
   // Only findings that are actually "open" count against the score. A finding
@@ -141,6 +157,8 @@ export function computeScore(input: ScoreInput): RunScore {
       (a, b) => severityWorst(b) - severityWorst(a),
     ),
     counts: totalCounts,
+    kloc,
+    klocSource,
   };
 }
 

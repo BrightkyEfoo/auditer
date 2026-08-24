@@ -10,8 +10,28 @@ import { Pillar, Severity, Grade } from "./enums.js";
  * the same commit produce the same score and the number stays explainable.
  */
 
-/** Bump when the formula or weights change. Stamped per run. */
-export const SCORING_VERSION = "1.0.0";
+/**
+ * Bump when the formula or weights change. Stamped per run.
+ *
+ * 1.1.0 — the density factor stopped being a constant. The weights and the
+ * curve are untouched, but until this version nothing measured a repo's size,
+ * so every run scored on the `ASSUMED_KLOC` fallback and `(1 + 1/kloc)` was
+ * 1.1 for a 2 kLOC script and a 900 kLOC monolith alike. Runs stamped 1.0.0 are
+ * therefore NOT comparable to 1.1.0 runs of the same commit.
+ */
+export const SCORING_VERSION = "1.1.0";
+
+/**
+ * Density fallback, used only when no scanner measured the repo (the quality
+ * pillar was not requested, or scc failed). It is a placeholder that keeps the
+ * formula defined — never a measurement. Any run using it is stamped
+ * `klocSource: "assumed"` so a report can say so out loud.
+ */
+export const ASSUMED_KLOC = 10;
+
+/** Whether the kLOC that normalized a score was measured or merely assumed. */
+export const KlocSource = z.enum(["measured", "assumed"]);
+export type KlocSource = z.infer<typeof KlocSource>;
 
 /** Per-severity deduction weight (points removed, before asymptotic damping). */
 export const SEVERITY_WEIGHT: Record<Severity, number> = {
@@ -72,5 +92,13 @@ export const RunScore = z.object({
   grade: Grade,
   pillars: z.array(PillarResult),
   counts: SeverityCounts,
+  /**
+   * The size the score was normalized by, and its provenance. Both are on the
+   * record because a score whose normalization is unknown is not defensible in
+   * an audit report: "B on 240 kLOC measured" and "B on an assumed 10 kLOC" are
+   * different claims and a reader must be able to tell them apart.
+   */
+  kloc: z.number().positive(),
+  klocSource: KlocSource,
 });
 export type RunScore = z.infer<typeof RunScore>;
