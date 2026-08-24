@@ -143,7 +143,21 @@ async function processAudit(job: AuditJob): Promise<void> {
       const secretsRequested = job.pillars.includes("secrets");
       const { cloneUrl, token, tokenUser, ref } = await resolveClone(organizationId, job.repositoryId);
       ws = await prepare({ cloneUrl, ref: job.ref ?? ref, token, tokenUser, fullHistory: secretsRequested });
-      await publisher.log(auditRunId, `cloned ${cloneUrl} (${ws.manifests.length} manifests)`);
+      await publisher.log(
+        auditRunId,
+        `cloned ${cloneUrl} @ ${ws.commitSha?.slice(0, 12) ?? "no-commit"} (${ws.manifests.length} manifests)`,
+      );
+      // Stamp the commit that was ACTUALLY analysed. Every report asserts "the
+      // result holds for the commit shown above"; until now nothing wrote it,
+      // so the reports printed "non déclaré" and the sentence backed nothing.
+      if (ws.commitSha) {
+        await withTenant(prisma, organizationId, (tx) =>
+          tx.auditRun.update({
+            where: { id: auditRunId },
+            data: { commitSha: ws!.commitSha, ref: job.ref ?? ref ?? null },
+          }),
+        );
+      }
       ctx = { auditRunId, organizationId, workspacePath: ws.path, manifests: ws.manifests };
     } else if (job.targetId) {
       // ── DAST / UX audit: verified target, no clone. Ownership is re-checked

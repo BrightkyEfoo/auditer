@@ -89,12 +89,20 @@ export class OsvScannerAdapter implements ScannerAdapter {
     }
     return {
       image: this.image,
+      // `--experimental-local-db-path` was dropped: it is not a flag of
+      // osv-scanner 1.9.2 (verified against `scan --help` in the pinned image).
+      // It was silently ignored rather than rejected, which is the dangerous
+      // kind of wrong — it read like the DB location was pinned here when the
+      // only thing actually pointing the scanner at the mounted DB is the
+      // OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY env below. Verified: with no DB
+      // mounted, osv-scanner exits 127 "could not find local databases", which
+      // classifyExit maps to "fail" — a stale or unmounted DB is loud, not a
+      // silent zero-vulnerability report.
       cmd: [
         "scan",
         "--experimental-offline", // no network; match against the mounted DB
         "--experimental-offline-vulnerabilities",
-        "--experimental-local-db-path=/opt/osv-db",
-        "--format=json",
+        "--format=json", // stdout; the runner keeps no files
         "--recursive",
         CONTAINER_REPO_PATH,
       ],
@@ -104,7 +112,20 @@ export class OsvScannerAdapter implements ScannerAdapter {
       network: { mode: "none" },
       isolationTier: this.isolationTier,
       ...DEFAULT_HARDENING,
-      timeoutMs: 5 * 60_000,
+      // Overrides the shared 2 GiB ceiling, which osv-scanner exceeds on any
+      // real project. Measured on a repository with a 1506-package lockfile:
+      // killed with exit 137 (SIGKILL, the OOM signal) at 2 GiB, completes at
+      // 4 GiB. It holds the whole offline vulnerability database in memory
+      // alongside the resolved dependency graph, so the requirement scales with
+      // the project, not with our defaults.
+      //
+      // This mattered more than a tuning detail: the kill was recorded as a
+      // failed scan, and a failed scan is a hole in the SCA pillar that reads
+      // to the customer as "no known vulnerabilities".
+      memoryBytes: 4 * 1024 * 1024 * 1024,
+      // Raised with it: the same run took over ten minutes at 4 GiB on a real
+      // dependency tree, against a five-minute ceiling.
+      timeoutMs: 20 * 60_000,
     };
   }
 

@@ -28,6 +28,14 @@ export interface PrepareOpts {
 export interface Workspace {
   path: string;
   manifests: string[];
+  /**
+   * The commit actually analysed, read back from the clone rather than taken
+   * from the request. Every report asserts "the result holds for the commit
+   * shown above" and prints "non déclaré" instead, because nothing ever
+   * recorded it — the sentence was unbacked. Null only for a source that has
+   * no git history.
+   */
+  commitSha: string | null;
   cleanup: () => Promise<void>;
 }
 
@@ -100,19 +108,47 @@ export async function prepare(opts: PrepareOpts): Promise<Workspace> {
       GIT_CONFIG_GLOBAL: gitconfig, // honors safe.directory=* from this file
     },
   });
+  // Read the commit BEFORE handing the tree to another uid: rev-parse is a git
+  // operation, and after the chown git treats the tree as dubiously owned.
+  let commitSha: string | null = null;
+  try {
+    const { stdout } = await exec("git", ["-C", dir, "rev-parse", "HEAD"], {
+      timeout: 15_000,
+      env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: gitconfig },
+    });
+    commitSha = stdout.trim() || null;
+  } catch {
+    // A source with no history (a plain directory) legitimately has no commit.
+  }
+
   await rm(gitconfig, { force: true }).catch(() => {});
 
-  // Match the sandbox uid so non-root scanner containers see matching ownership
-  // on the cloned repo (avoids git's dubious-ownership guard). Worker is root,
-  // so this succeeds; root can still clean it up afterwards.
+  // Hand the tree to the sandbox uid so non-root scanner containers see
+  // matching ownership and git's dubious-ownership guard stays quiet inside
+  // them. The worker runs as root, so this succeeds — and root can still remove
+  // the directory afterwards.
+  //
+  // NOT swallowed. A failed chown means every git-aware scanner (gitleaks reads
+  // the full history) dies on "detected dubious ownership" — which is recorded
+  // as a failed scan, and a failed scan reads to the customer as a clean
+  // pillar. Silence here buys nothing and hides exactly the failure that is
+  // hardest to diagnose after the fact.
   const uid = process.env.SANDBOX_UID ?? "65534:65534";
-  await exec("chown", ["-R", uid, dir]).catch(() => {});
+  try {
+    await exec("chown", ["-R", uid, dir]);
+  } catch (err) {
+    throw new Error(
+      `workspace: chown to ${uid} failed — git-aware scanners would fail on ` +
+        `dubious ownership. Is the worker running as root? (${String(err)})`,
+    );
+  }
 
   const manifests = await detectManifests(dir);
 
   return {
     path: dir,
     manifests,
+    commitSha,
     cleanup: () => rm(dir, { recursive: true, force: true }),
   };
 }

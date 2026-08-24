@@ -19,6 +19,17 @@ export class EventPublisher {
   }
 
   private async publish(auditRunId: string, evt: WithoutSeq<AuditEvent>): Promise<void> {
+    // Mirror every event to stdout BEFORE publishing. Progress used to go only
+    // to Valkey pub/sub, which is a LIVE channel: once the browser closes, the
+    // record is gone. A run that failed an hour ago therefore left two lines in
+    // four hours of worker logs and nothing to diagnose from — the operator had
+    // strictly less information than the customer watching the page.
+    //
+    // One structured line per event, on stdout, where `docker logs` and any log
+    // shipper can find it. It costs nothing and it is the difference between
+    // reading what happened and guessing.
+    console.log(JSON.stringify({ level: "info", run: auditRunId, ...evt }));
+
     const seq = await this.nextSeq(auditRunId);
     await this.redis.publish(auditChannel(auditRunId), JSON.stringify({ ...evt, seq }));
   }
