@@ -143,10 +143,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ fingerprint, status }),
     }),
-  exportReport: (runId: string) =>
-    req<{ reportId: string }>(`/reports/${runId}/export`, {
+  /**
+   * `document` names the DELIVERABLE, not the file type — one run produces four.
+   * The api still accepts the legacy container names, but nothing new should
+   * send them.
+   */
+  exportReport: (runId: string, document: ReportDocument = "technique") =>
+    req<{ reportId: string; document: ReportDocument }>(`/reports/${runId}/export`, {
       method: "POST",
-      body: JSON.stringify({ format: "html" }),
+      body: JSON.stringify({ format: document }),
     }),
   getReport: (runId: string) => req<Report>(`/reports/${runId}`),
 
@@ -176,10 +181,15 @@ export const api = {
  */
 export const ACCOUNT_EXPORT_PATH = "/api/account/export";
 
+/** The four deliverables of a run. Mirrors ReportDocument in @auditer/types. */
+export type ReportDocument = "technique" | "dirigeant" | "attestation" | "progression";
+
 export interface Report {
   id: string;
   status: string;
   summary: unknown;
+  /** Which of the four this artifact is; null until one has been rendered. */
+  document: ReportDocument | null;
   contentType: string | null;
   sizeBytes: number | null;
   /** Same-origin api path; null until the render has finished. */

@@ -12,17 +12,47 @@ import {
 import type { Response } from "express";
 import { z } from "zod";
 import { getStorage } from "@auditer/storage";
+import { DEFAULT_REPORT_DOCUMENT, ReportDocument, normalizeReportDocument } from "@auditer/types";
 import { AuthGuard, Auth, type AuthContext } from "../auth/auth.guard.js";
 import { PrismaService } from "../infra/prisma.service.js";
 import { QueueService } from "../infra/queue.service.js";
 import { ZodBody } from "../common/zod.pipe.js";
 
-const ExportBody = z.object({ format: z.enum(["pdf", "html"]).default("pdf") });
+/**
+ * `format` names the DELIVERABLE, not the file type. One mission produces four
+ * documents — the technical relevé, the two-page executive note, the one-page
+ * signed attestation and the progression report — because the five readers of
+ * an audit do not read the same thing (NIST SP 800-115: "a report may have
+ * multiple audiences, multiple report formats may be required").
+ *
+ * The legacy container names `html` and `pdf` are still accepted and resolve to
+ * the technical relevé, which is what they used to produce: apps/web posts
+ * `{ format: "html" }` today, and breaking a live caller to tidy a vocabulary
+ * is not a trade worth making. `normalizeReportDocument` owns that mapping so
+ * the api and the worker cannot disagree about it.
+ */
+const ExportBody = z.object({
+  format: z
+    .string()
+    .default(DEFAULT_REPORT_DOCUMENT)
+    .transform((v) => normalizeReportDocument(v))
+    .refine((v): v is ReportDocument => v !== null, {
+      message: `format must be one of ${ReportDocument.options.join(", ")} (or the legacy html/pdf)`,
+    }),
+});
 
 /**
- * Report export. The actual render (Paged.js in a Playwright container) runs on
- * the worker; this endpoint creates a Report row and re-enqueues an aggregate/
- * report job. GET returns the row + a presigned download URL once ready.
+ * The container the rendered document is stored in, which is NOT the document.
+ * Every deliverable is HTML today; the paged PDF renderer changes this one
+ * value and nothing else. Storing the deliverable name here instead would make
+ * the row lie about its own content type.
+ */
+const STORED_CONTAINER = "html" as const;
+
+/**
+ * Report export. The actual render runs on the worker; this endpoint creates a
+ * Report row and re-enqueues a report-only job. GET returns the row + the
+ * download path once ready.
  */
 @Controller("api/reports")
 @UseGuards(AuthGuard)
@@ -38,7 +68,7 @@ export class ReportsController {
     @Auth() auth: AuthContext,
     @Param("runId") runId: string,
     @Body(new ZodBody(ExportBody)) body: z.infer<typeof ExportBody>,
-  ): Promise<{ reportId: string }> {
+  ): Promise<{ reportId: string; document: z.infer<typeof ReportDocument> }> {
     const report = await this.prisma.tenant(auth.organizationId, async (tx) => {
       const run = await tx.auditRun.findFirst({
         where: { id: runId, organizationId: auth.organizationId },
@@ -48,14 +78,17 @@ export class ReportsController {
         data: {
           organizationId: auth.organizationId,
           auditRunId: runId,
-          format: body.format,
+          // The container, not the deliverable — see STORED_CONTAINER.
+          format: STORED_CONTAINER,
           status: "queued",
         },
       });
     });
 
     // Report-render job — distinct jobId so BullMQ doesn't dedupe it against the
-    // already-completed audit job for this run.
+    // already-completed audit job for this run. The jobId carries the report id,
+    // which is per-export, so requesting the attestation right after the
+    // executive note enqueues two jobs rather than silently collapsing into one.
     await this.queue.enqueueAudit(
       {
         auditRunId: runId,
@@ -66,7 +99,7 @@ export class ReportsController {
       `report-${report.id}`,
     );
 
-    return { reportId: report.id };
+    return { reportId: report.id, document: body.format };
   }
 
   @Get(":runId")
@@ -77,6 +110,8 @@ export class ReportsController {
       id: report.id,
       status: report.status,
       summary: report.summary,
+      /** Which of the four deliverables this artifact is. */
+      document: artifact ? documentFromKey(artifact.storageKey) : null,
       contentType: artifact?.contentType ?? null,
       sizeBytes: artifact ? Number(artifact.sizeBytes) : null,
       // A same-origin API path, NOT a presigned object-storage URL. Presigning
@@ -108,6 +143,11 @@ export class ReportsController {
     const contentType = artifact.contentType ?? "application/octet-stream";
     const ext = EXT_BY_TYPE[contentType] ?? "bin";
     const stamp = new Date().toISOString().slice(0, 10);
+    // The saved file names its deliverable. A client who exported the four
+    // documents of one mission otherwise ends up with four files called
+    // `auditer-releve-…` and no way to tell the attestation they can circulate
+    // from the technical report they must not.
+    const document = documentFromKey(artifact.storageKey);
 
     res.setHeader("content-type", contentType);
     res.setHeader("content-length", String(body.byteLength));
@@ -116,7 +156,7 @@ export class ReportsController {
     // same-origin would turn any escaping mistake into stored XSS.
     res.setHeader(
       "content-disposition",
-      `attachment; filename="auditer-releve-${runId.slice(0, 8)}-${stamp}.${ext}"`,
+      `attachment; filename="auditer-${document}-${runId.slice(0, 8)}-${stamp}.${ext}"`,
     );
     res.setHeader("cache-control", "private, no-store");
     res.send(body);
@@ -142,6 +182,19 @@ export class ReportsController {
 
     return { report, artifact };
   }
+}
+
+/**
+ * Reads the deliverable back out of the object key the worker wrote
+ * (`<org>/<run>/report/<uuid>.<document>.html`, see apps/worker/src/main.ts).
+ *
+ * A key without that segment predates the four documents and is the technical
+ * relevé — which is what those exports actually contained. Falling back rather
+ * than throwing matters here: an old artifact must stay downloadable.
+ */
+function documentFromKey(storageKey: string): z.infer<typeof ReportDocument> {
+  const m = /\.([a-z]+)\.[a-z0-9]+$/i.exec(storageKey);
+  return (m ? normalizeReportDocument(m[1]) : null) ?? DEFAULT_REPORT_DOCUMENT;
 }
 
 /** Download filename extension, driven by the stored content type. */

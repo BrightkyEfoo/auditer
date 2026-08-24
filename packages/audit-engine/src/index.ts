@@ -11,6 +11,18 @@ export { computeFingerprint, withFingerprints } from "./normalize/fingerprint.js
 
 // Pipeline
 export { dedupe, type DedupResult } from "./dedup/index.js";
+// Cross-run comparison. Lives here rather than in the worker because it is a
+// pure function over findings — the same package that computes the score, and
+// the only place in the repo with a test harness.
+export {
+  computeDelta,
+  type DeltaFinding,
+  type DeltaSnapshot,
+  type DeltaEntry,
+  type DeltaResult,
+  type SeverityMovement,
+  type ComputeDeltaInput,
+} from "./delta/index.js";
 export { computeScore, SCORING_VERSION } from "./scoring/index.js";
 export {
   runScan,

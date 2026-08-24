@@ -12,14 +12,20 @@ import {
   type ScanContext,
   type RunScanResult,
 } from "@auditer/audit-engine";
-import type { RawFinding, Pillar, TriageStatus } from "@auditer/types";
+import type { RawFinding, Pillar, TriageStatus, Severity, ReportDocument } from "@auditer/types";
 import type { ExecutiveSummary } from "@auditer/types";
+import { DEFAULT_REPORT_DOCUMENT, normalizeReportDocument } from "@auditer/types";
 import { getStorage } from "@auditer/storage";
 import { EventPublisher } from "./events.js";
 import { prepare, type Workspace } from "./workspace.js";
 import { mintInstallationToken } from "./github-app.js";
 import { validGitlabToken } from "./gitlab.js";
 import { buildReportHtml } from "./report-html.js";
+import { buildExecReportHtml, type ExecPillarRow } from "./report-exec.js";
+import { buildDeltaReportHtml } from "./report-delta.js";
+import { buildAttestationHtml } from "./report-attestation.js";
+import { loadProgress, type ProgressContext } from "./delta.js";
+import { startRetentionScheduler } from "./retention-scheduler.js";
 
 /**
  * The worker: consumes `audit` jobs and drives the whole pipeline in-process —
@@ -373,6 +379,34 @@ async function persistResults(
   await withTenant(prisma, organizationId, async (tx) => {
     // Fresh findings for this run.
     await tx.finding.deleteMany({ where: { auditRunId, organizationId } });
+
+    /* ── Cross-run identity ───────────────────────────────────────────────
+       `firstSeenRunId` is what turns a finding's AGE into a measurable number,
+       and age is the governance metric of the progression report: a medium
+       open for fourteen months says more about how an organisation handles
+       risk than a critical opened yesterday.
+
+       The column existed but nothing ever wrote it, so every finding looked
+       brand new at every relevé. Recovered in ONE query over the whole batch
+       rather than a lookup per finding — a run with four hundred findings
+       would otherwise open four hundred round-trips inside the tenant
+       transaction. The earliest row per fingerprint wins, and it carries its
+       own `firstSeenRunId` forward when it has one, so the origin survives
+       however many relevés separate it from today. */
+    const fingerprints = [...new Set(agg.findings.map((f) => f.fingerprint))];
+    const priorSeen = new Map<string, string>();
+    if (fingerprints.length > 0) {
+      const prior = await tx.finding.findMany({
+        where: { organizationId, fingerprint: { in: fingerprints } },
+        select: { fingerprint: true, firstSeenRunId: true, auditRunId: true, createdAt: true },
+        orderBy: { createdAt: "asc" },
+      });
+      for (const p of prior) {
+        if (priorSeen.has(p.fingerprint)) continue;
+        priorSeen.set(p.fingerprint, p.firstSeenRunId ?? p.auditRunId);
+      }
+    }
+
     for (const f of agg.findings) {
       const scanId = fpToScanId.get(f.fingerprint);
       if (!scanId) continue;
@@ -410,6 +444,10 @@ async function persistResults(
           aiNeedsHuman: f.ai?.needsHuman ?? false,
           aiModel: f.ai?.model,
           triageStatus: f.triageStatus,
+          // Falls back to THIS run when the fingerprint is genuinely new — the
+          // age of a finding first seen today is zero, not unknown.
+          firstSeenRunId: priorSeen.get(f.fingerprint) ?? auditRunId,
+          lastSeenRunId: auditRunId,
         },
       });
     }
@@ -452,10 +490,22 @@ async function persistResults(
 
 /**
  * Report render path (from POST /reports/:id/export). Builds a self-contained,
- * print-ready HTML report from the persisted run + findings + summary, uploads
- * it to object storage, and links it on the Report. (Binary PDF via a headless
- * Chromium container printing this exact HTML is the one remaining infra step;
- * the HTML artifact is already a complete, downloadable, print-ready report.)
+ * print-ready HTML document from the persisted run + findings + summary,
+ * uploads it to object storage, and links it on the Report.
+ *
+ * ONE MISSION, FOUR DOCUMENTS. NIST SP 800-115 puts it plainly — "a report may
+ * have multiple audiences, multiple report formats may be required" — and the
+ * five readers of an audit do not read the same thing. Until now the api
+ * accepted a `format` and the worker ignored it, so every export produced the
+ * technical relevé whatever was asked for. The four deliverables:
+ *
+ *   technique    → report-html.ts        the full relevé, exploitable detail
+ *   dirigeant    → report-exec.ts        two pages, business consequence, no jargon
+ *   progression  → report-delta.ts       the comparison with the previous relevé
+ *   attestation  → report-attestation.ts one page, signed, safe to circulate
+ *
+ * The three comparative documents pay for two extra queries (previous relevé +
+ * score history); `technique` does not, and skips them.
  */
 /**
  * Renders the persisted CodeLocation blob as `path:line` for the report. A
@@ -470,9 +520,51 @@ function locationLabel(loc: unknown): string | null {
   return typeof l.startLine === "number" ? `${l.path}:${l.startLine}` : l.path;
 }
 
+/** Zeroed severity tally — every document states a zero, never an absence. */
+function emptySeverityCounts(): Record<Severity, number> {
+  return { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+}
+
+function severityCounts(findings: { severity: string }[]): Record<Severity, number> {
+  const out = emptySeverityCounts();
+  for (const f of findings) {
+    const s = f.severity as Severity;
+    if (s in out) out[s] += 1;
+  }
+  return out;
+}
+
+/** Open findings grouped by pillar — the executive note's unit of narration. */
+function countsByPillar(findings: { severity: string; pillar: string }[]): ExecPillarRow[] {
+  const map = new Map<string, Record<Severity, number>>();
+  for (const f of findings) {
+    const row = map.get(f.pillar) ?? emptySeverityCounts();
+    const s = f.severity as Severity;
+    if (s in row) row[s] += 1;
+    map.set(f.pillar, row);
+  }
+  return [...map].map(([pillar, counts]) => ({ pillar, counts }));
+}
+
+/**
+ * A scan counts as coverage only if it ran to completion. `skipped` is excluded
+ * on purpose — same reasoning as apps/worker/src/delta.ts: a relevance gate is
+ * indistinguishable here from a gate that fired wrongly, and an attestation
+ * that lists an unexecuted pillar as covered is the one error in that document
+ * that cannot be walked back.
+ */
+function measuredPillarsOf(scans: { pillar: string; status: string }[]): string[] {
+  return [...new Set(scans.filter((s) => s.status === "success" || s.status === "partial").map((s) => s.pillar))];
+}
+
 async function renderReport(job: AuditJob): Promise<void> {
   const { organizationId, auditRunId } = job;
   const reportId = (job.scopeConfig?.reportId as string) ?? undefined;
+  // The api posts the deliverable under `format`. Callers written before the
+  // four documents existed post a CONTAINER name (`html`, `pdf`); those
+  // normalize to the technical relevé, which is what they used to receive.
+  const document: ReportDocument =
+    normalizeReportDocument(job.scopeConfig?.format) ?? DEFAULT_REPORT_DOCUMENT;
 
   await withTenant(prisma, organizationId, async (tx) => {
     const run = await tx.auditRun.findFirst({ where: { id: auditRunId, organizationId } });
@@ -480,6 +572,10 @@ async function renderReport(job: AuditJob): Promise<void> {
     const repo = run.repositoryId
       ? await tx.repository.findFirst({ where: { id: run.repositoryId } })
       : null;
+    const org = await tx.organization.findFirst({
+      where: { id: organizationId },
+      select: { name: true },
+    });
     const pillars = await tx.pillarResult.findMany({ where: { auditRunId } });
     const scans = await tx.scan.findMany({ where: { auditRunId } });
     const findings = await tx.finding.findMany({
@@ -499,56 +595,153 @@ async function renderReport(job: AuditJob): Promise<void> {
       .map((s) => (s.stats as Record<string, number> | null)?.["loc.code"])
       .find((n): n is number => typeof n === "number" && n > 0);
 
-    const html = buildReportHtml({
-      runId: auditRunId,
-      fullName: repo?.fullName ?? null,
-      commitSha: run.commitSha,
-      ref: run.ref,
-      riskScore: run.riskScore,
-      scoringVersion: run.scoringVersion,
-      startedAt: run.startedAt?.toISOString() ?? null,
-      finishedAt: run.finishedAt?.toISOString() ?? null,
-      // What was ASKED for, which is what makes an unexecuted pillar visible.
-      // Deriving this from the scans that ran would erase exactly the gap the
-      // report exists to disclose.
-      requestedPillars: run.pillars,
-      kloc: locCode != null ? locCode / 1000 : null,
-      klocMeasured: locCode != null,
-      vulnFeedsSnapshot: run.vulnFeedsSnapshot?.toISOString() ?? null,
-      pillars: pillars.map((p) => ({ pillar: p.pillar, score: p.score, grade: p.grade })),
-      summary: (reportRow?.summary as ExecutiveSummary | null) ?? null,
-      findings: findings.map((f) => ({
-        pillar: f.pillar,
-        tool: f.tool,
-        severity: f.severity,
-        title: f.title,
-        description: f.description,
-        vulnIds: f.vulnIds,
-        cvssScore: f.cvssScore,
-        aiExplanation: f.aiExplanation,
-        aiRemediation: f.aiRemediation,
-        aiNeedsHuman: f.aiNeedsHuman,
-        epssScore: f.epssScore,
-        kevListed: f.kevListed,
-        location: locationLabel(f.location),
-      })),
-      scanners: scans.map((s) => ({
-        tool: s.tool,
-        pillar: s.pillar,
-        version: s.toolVersion,
-        imageRef: s.imageDigest,
-        status: s.status,
-        findingCount: findings.filter((f) => f.scanId === s.id).length,
-        error: s.error,
-      })),
-      generatedAt: new Date().toISOString(),
-    });
+    const generatedAt = new Date().toISOString();
+    const runAt = (run.finishedAt ?? run.createdAt).toISOString();
+    const measuredPillars = measuredPillarsOf(scans);
+    // Triage applied: an accepted risk and an assumed false positive are
+    // decisions, not open findings, and the client-facing documents must not
+    // present them as unfinished work.
+    const openFindings = findings.filter((f) => f.triageStatus === "open");
+    const openCounts = severityCounts(openFindings);
+
+    // Only the comparative documents pay for the previous relevé + history.
+    const progress: ProgressContext | null =
+      document === "technique" ? null : await loadProgress(tx, organizationId, run);
+
+    let html: string;
+    switch (document) {
+      case "dirigeant":
+        html = buildExecReportHtml({
+          runId: auditRunId,
+          clientName: org?.name ?? null,
+          projectName: repo?.fullName ?? null,
+          generatedAt,
+          runAt,
+          riskScore: run.riskScore,
+          // The letter grade comes from the persisted summary, not recomputed
+          // here: the note a client already saw must not change because a
+          // later export re-derived it.
+          grade: (reportRow?.summary as ExecutiveSummary | null)?.overallGrade ?? null,
+          counts: openCounts,
+          byPillar: countsByPillar(openFindings),
+          delta: progress?.delta ?? null,
+          requestedPillars: run.pillars,
+          measuredPillars,
+        });
+        break;
+
+      case "progression":
+        html = buildDeltaReportHtml({
+          runId: auditRunId,
+          clientName: org?.name ?? null,
+          projectName: repo?.fullName ?? null,
+          commitSha: run.commitSha,
+          generatedAt,
+          scoringVersion: run.scoringVersion,
+          delta: progress!.delta,
+          history: progress!.history,
+          requestedPillars: run.pillars,
+          measuredPillars,
+        });
+        break;
+
+      case "attestation":
+        html = buildAttestationHtml({
+          runId: auditRunId,
+          issuedAt: generatedAt,
+          clientName: org?.name ?? null,
+          projectName: repo?.fullName ?? null,
+          ref: run.ref,
+          commitSha: run.commitSha,
+          // Covered / not covered are BOTH declared: the declared tooled
+          // coverage is what this document offers in place of the man-days it
+          // does not have, and a coverage list without its holes is marketing.
+          pillarsCovered: measuredPillars,
+          pillarsNotCovered: run.pillars.filter((p) => !measuredPillars.includes(p)),
+          windowStart: run.startedAt?.toISOString() ?? null,
+          windowEnd: run.finishedAt?.toISOString() ?? null,
+          engines: scans.map((s) => ({
+            tool: s.tool,
+            version: s.toolVersion ?? s.imageDigest,
+            pillar: s.pillar,
+            status: s.status,
+          })),
+          vulnFeedsSnapshot: run.vulnFeedsSnapshot?.toISOString() ?? null,
+          scoringVersion: run.scoringVersion,
+          counts: openCounts,
+          remediation: progress?.delta.hasBaseline
+            ? {
+                fixedSinceLast: progress.delta.fixed.length,
+                newSinceLast: progress.delta.introduced.length,
+                stillOpen: progress.delta.openCurrent,
+                previousAt: progress.delta.previousAt,
+              }
+            : null,
+        });
+        break;
+
+      default:
+        html = buildReportHtml({
+          runId: auditRunId,
+          fullName: repo?.fullName ?? null,
+          commitSha: run.commitSha,
+          ref: run.ref,
+          riskScore: run.riskScore,
+          scoringVersion: run.scoringVersion,
+          startedAt: run.startedAt?.toISOString() ?? null,
+          finishedAt: run.finishedAt?.toISOString() ?? null,
+          // What was ASKED for, which is what makes an unexecuted pillar visible.
+          // Deriving this from the scans that ran would erase exactly the gap the
+          // report exists to disclose.
+          requestedPillars: run.pillars,
+          kloc: locCode != null ? locCode / 1000 : null,
+          klocMeasured: locCode != null,
+          vulnFeedsSnapshot: run.vulnFeedsSnapshot?.toISOString() ?? null,
+          pillars: pillars.map((p) => ({ pillar: p.pillar, score: p.score, grade: p.grade })),
+          summary: (reportRow?.summary as ExecutiveSummary | null) ?? null,
+          findings: findings.map((f) => ({
+            pillar: f.pillar,
+            tool: f.tool,
+            severity: f.severity,
+            title: f.title,
+            description: f.description,
+            vulnIds: f.vulnIds,
+            cvssScore: f.cvssScore,
+            aiExplanation: f.aiExplanation,
+            aiRemediation: f.aiRemediation,
+            aiNeedsHuman: f.aiNeedsHuman,
+            epssScore: f.epssScore,
+            kevListed: f.kevListed,
+            location: locationLabel(f.location),
+          })),
+          scanners: scans.map((s) => ({
+            tool: s.tool,
+            pillar: s.pillar,
+            version: s.toolVersion,
+            imageRef: s.imageDigest,
+            status: s.status,
+            findingCount: findings.filter((f) => f.scanId === s.id).length,
+            error: s.error,
+          })),
+          generatedAt,
+        });
+        break;
+    }
 
     const storage = getStorage();
     // Typed as what it actually is. The renderer produces HTML today; when the
     // paged PDF renderer lands, only `ext`/`contentType` change and the
     // download endpoint follows the row instead of guessing.
-    const key = storage.buildKey({ organizationId, auditRunId, type: "report", ext: "html" });
+    //
+    // The DELIVERABLE is carried in the object key, between the uuid and the
+    // extension. `Report.format` is a Prisma enum naming the container, and
+    // widening it to hold four deliverable names would mean a schema migration
+    // for a label; the key stays attached to the bytes it describes, and the
+    // download endpoint reads the name back from it to title the file the user
+    // saves. A key with no such segment predates this and reads as `technique`.
+    const key = storage
+      .buildKey({ organizationId, auditRunId, type: "report", ext: "html" })
+      .replace(/\.html$/, `.${document}.html`);
     const put = await storage.put(key, html, "text/html");
     const artifact = await tx.artifact.create({
       data: {
@@ -574,7 +767,7 @@ async function renderReport(job: AuditJob): Promise<void> {
       });
     }
   });
-  await publisher.log(auditRunId, "report rendered (HTML artifact stored)");
+  await publisher.log(auditRunId, `report rendered: ${document} (HTML artifact stored)`);
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────
@@ -597,8 +790,17 @@ worker.on("ready", () => {
   console.log("[worker] ready, consuming audit jobs");
 });
 
+/**
+ * Second job of this process: the nightly retention purge. It runs on its OWN
+ * queue with its own connections and concurrency 1, so it can never take a slot
+ * from an audit — see retention-scheduler.ts for the mechanism and for why the
+ * schedule lives in Valkey rather than in this process.
+ */
+const retention = startRetentionScheduler();
+
 async function shutdown(): Promise<void> {
   await worker.close();
+  await retention.close().catch(() => {});
   await redis.quit().catch(() => {});
   await prisma.$disconnect().catch(() => {});
   process.exit(0);

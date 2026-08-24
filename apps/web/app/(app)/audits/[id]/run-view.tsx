@@ -29,6 +29,7 @@ import {
   type Report,
 } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { Deliverables } from "@/components/app/deliverables";
 
 const STEPS = ["queued", "cloning", "scanning", "analyzing", "reporting", "done"] as const;
 const TERMINAL = new Set(["done", "completed_with_errors", "failed", "canceled"]);
@@ -42,8 +43,6 @@ export function RunView({ runId }: { runId: string }) {
   const [sevFilter, setSevFilter] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [hideTriaged, setHideTriaged] = useState(false);
-  const [exported, setExported] = useState<"idle" | "busy" | "done" | "failed">("idle");
-  const [report, setReport] = useState<Report | null>(null);
 
   const refreshFindings = useCallback(() => {
     api.listFindings(runId).then(setFindings).catch(() => {});
@@ -58,17 +57,6 @@ export function RunView({ runId }: { runId: string }) {
       setStatus(r.status);
       if (TERMINAL.has(r.status)) {
         refreshFindings();
-        // A report rendered during an earlier visit is still downloadable —
-        // surface it instead of offering to generate it again.
-        api
-          .getReport(runId)
-          .then((rep) => {
-            if (rep.downloadPath) {
-              setReport(rep);
-              setExported("done");
-            }
-          })
-          .catch(() => {});
       }
     });
 
@@ -105,30 +93,6 @@ export function RunView({ runId }: { runId: string }) {
     await api.setTriage(f.fingerprint, s).catch(() => refreshFindings());
   }
 
-  /**
-   * Render the report, then WAIT for it. The export endpoint only enqueues a
-   * job, so returning at 202 and calling it done is what left every previous
-   * export unreachable: the user was told "exported" and given nothing.
-   */
-  async function exportReport() {
-    setExported("busy");
-    try {
-      await api.exportReport(runId);
-      for (let i = 0; i < 40; i++) {
-        await new Promise((r) => setTimeout(r, 1500));
-        const rep = await api.getReport(runId).catch(() => null);
-        if (rep?.downloadPath) {
-          setReport(rep);
-          setExported("done");
-          return;
-        }
-        if (rep?.status === "failed") break;
-      }
-      setExported("failed");
-    } catch {
-      setExported("failed");
-    }
-  }
 
   const counts = useMemo(
     () =>
@@ -167,25 +131,7 @@ export function RunView({ runId }: { runId: string }) {
             ? `Lancé ${ago(run.createdAt)}${run.scoringVersion ? ` · barème v${run.scoringVersion}` : ""} · ${runId}`
             : undefined
         }
-        actions={
-          <>
-            {TERMINAL.has(status) &&
-              (report?.downloadPath ? (
-                <ButtonLink href={report.downloadPath} variant="primary" download>
-                  Télécharger le rapport
-                </ButtonLink>
-              ) : (
-                <Button onClick={exportReport} disabled={exported === "busy"}>
-                  {exported === "busy"
-                    ? "rédaction en cours…"
-                    : exported === "failed"
-                      ? "Réessayer l'export"
-                      : "Générer le rapport"}
-                </Button>
-              ))}
-            <DeleteRun runId={runId} />
-          </>
-        }
+        actions={<DeleteRun runId={runId} />}
       />
 
       {/* ── Progress ───────────────────────────────────────────────────── */}
@@ -352,6 +298,8 @@ export function RunView({ runId }: { runId: string }) {
           )}
         </div>
       </section>
+
+      <Deliverables runId={runId} />
     </>
   );
 }
