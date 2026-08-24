@@ -39,6 +39,7 @@ export function SiteNav({ authenticated }: { authenticated: boolean }) {
   return (
     <>
       <header
+        style={{ viewTransitionName: "site-header" }}
         className={cn(
           "fixed inset-x-0 top-0 z-50 transition-colors duration-300",
           scrolled ? "border-b border-line bg-carbon/92 backdrop-blur-sm" : "border-b border-transparent",

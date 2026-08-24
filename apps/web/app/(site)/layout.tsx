@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { ViewTransition, type ReactNode } from "react";
 import { SiteNav } from "@/components/site/nav";
 import { SiteFooter } from "@/components/site/footer";
 import { getSession } from "@/lib/session";
@@ -23,7 +23,13 @@ export default async function SiteLayout({ children }: { children: ReactNode }) 
         Aller au contenu
       </a>
       <SiteNav authenticated={session !== null} />
-      <main id="contenu">{children}</main>
+      {/* Cross-page transition. The header sits OUTSIDE it and carries its
+          own view-transition-name, so it stays put while the content changes —
+          an element that slides away and back is the one thing that makes a
+          page transition feel unmoored. */}
+      <ViewTransition>
+        <main id="contenu">{children}</main>
+      </ViewTransition>
       <SiteFooter />
     </>
   );

@@ -364,7 +364,67 @@
   }
 }
 
+/*
+ * ── Page transitions ────────────────────────────────────────────────────
+ * Same-document View Transitions, Baseline since October 2025. Browsers
+ * without support navigate normally and simply do not animate, so there is
+ * nothing to feature-detect.
+ *
+ * The gesture is deliberately the SAME one the display type uses: the outgoing
+ * page lifts and fades while the incoming one rises out of a clip. A soft
+ * crossfade would have been the default; reusing the line-reveal motion makes
+ * the page change read as part of the same system rather than as a plugin.
+ */
+
+/* The transition overlay sits above everything and swallows clicks. Without
+   this, anything tapped mid-transition is simply lost. */
+::view-transition {
+  pointer-events: none;
+}
+
+/* The header must not animate — it is the fixed point the reader keeps their
+   eye on while the content is replaced. */
+::view-transition-group(site-header) {
+  animation: none;
+  z-index: 100;
+}
+::view-transition-old(site-header) {
+  display: none;
+}
+
+::view-transition-old(root) {
+  animation: vt-out 260ms var(--ease-out) both;
+}
+::view-transition-new(root) {
+  animation: vt-in 420ms var(--ease-out) 60ms both;
+}
+
+@keyframes vt-out {
+  to {
+    opacity: 0;
+    transform: translateY(-14px);
+  }
+}
+@keyframes vt-in {
+  from {
+    opacity: 0;
+    transform: translateY(22px);
+    clip-path: inset(12% 0 0 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  /* Page transitions resolve instantly rather than playing faster. */
+  ::view-transition-old(*),
+  ::view-transition-new(*),
+  ::view-transition-group(*) {
+    animation-duration: 0s !important;
+    animation-delay: 0s !important;
+  }
+
   /* Parallax and line reveals resolve to their final state rather than to a
      faster version of themselves. Shortening a motion someone asked not to see
      is still showing it to them. */
