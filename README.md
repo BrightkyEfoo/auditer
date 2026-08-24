@@ -69,7 +69,9 @@ cp .env.example .env            # fill ANTHROPIC_API_KEY to enable AI enrichment
 docker compose -f infra/compose/docker-compose.yml up -d
 
 # 2. Schema + RLS + seed
-pnpm --filter @auditer/db bootstrap     # db push + apply RLS
+pnpm --filter @auditer/db bootstrap     # prisma migrate deploy + RLS + RLS assertion
+#   Schema changes go through `migrate:dev`; `prisma db push` is banned here —
+#   see packages/db/README.md for why.
 pnpm --filter @auditer/db seed          # prints NEXT_PUBLIC_DEV_ORG_ID / _USER_ID
 #   → paste those into apps/web/.env
 

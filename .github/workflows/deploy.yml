@@ -1,8 +1,8 @@
 name: deploy
 
 # Deploys to the server over SSH on every push to main:
-#   rsync the source → write the server .env from repo secrets → build + up →
-#   run the (idempotent) DB bootstrap.
+#   rsync the source → write the server .env from repo secrets → build →
+#   apply the pending Prisma migrations → up.
 #
 # GitHub forbids secrets named GITHUB_* → we use GH_APP_* and remap to the real
 # GITHUB_APP_* env names on the server.
@@ -71,7 +71,29 @@ jobs:
         run: |
           ssh -p "${{ vars.DEPLOY_PORT || '22' }}" \
             "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
-            "cd ${{ vars.DEPLOY_PATH }} && docker build -t auditer/semgrep-rules:1.99.0-2 infra/docker/scanners/semgrep"
+            "cd ${{ vars.DEPLOY_PATH }} && docker build -t auditer/semgrep-rules:1.99.0-2 infra/docker/scanners/semgrep && docker build -t auditer/jscpd:5.0.16-1 infra/docker/scanners/jscpd"
+
+      - name: Pull third-party scanner images
+        # The worker spawns scanners through the docker-socket-proxy, which is
+        # allowed to CREATE containers but not to pull. An image that is not
+        # already on the host therefore fails the scan with "no such image" —
+        # and it fails per-pillar, so the run still succeeds with a hole in its
+        # coverage. Pulling here makes the host's image set an explicit part of
+        # the deploy instead of whatever happens to be left over from before.
+        run: |
+          ssh -p "${{ vars.DEPLOY_PORT || '22' }}" \
+            "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
+            "set -e
+             for img in \
+               ghcr.io/gitleaks/gitleaks:v8.21.2 \
+               ghcr.io/google/osv-scanner:v1.9.2 \
+               aquasec/trivy:0.58.0 \
+               hadolint/hadolint:2.12.0 \
+               ghcr.io/boyter/scc:v3.4.0 \
+               projectdiscovery/nuclei:v3.3.7 \
+               femtopixel/google-lighthouse:8.6.0; do
+               docker image inspect \"\$img\" >/dev/null 2>&1 || docker pull -q \"\$img\"
+             done"
 
       - name: Build report renderer image
         # Headless Chromium that turns the report HTML into the PDF deliverable
@@ -85,7 +107,7 @@ jobs:
             "cd ${{ vars.DEPLOY_PATH }} && docker build -t auditer/chromium-pdf:136.0.7103.113-1 infra/docker/scanners/chromium"
 
       - name: Build app image
-        # Build BEFORE the schema bootstrap, start AFTER it. Starting the app
+        # Build BEFORE the migrations, start AFTER them. Starting the app
         # first would leave the worker briefly running code that expects columns
         # the database does not have yet — the exact window in which a queued job
         # crashes on a missing column.
@@ -104,14 +126,40 @@ jobs:
             "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
             "cd ${{ vars.DEPLOY_PATH }} && docker compose -p auditer --env-file .env -f infra/compose/docker-compose.server.yml --profile ops run --rm -T vuln-feeds-refresh || true"
 
-      - name: DB bootstrap (idempotent)
+      - name: DB migrations (idempotent)
+        # WAS: `prisma db push --accept-data-loss` followed by `psql -f rls.sql`.
+        # Two defects, both fatal the day a paying customer has rows here:
+        #   - `db push` reconciles the database to the schema with no history. It
+        #     cannot be reviewed before it runs, cannot be replayed on a second
+        #     environment, and `--accept-data-loss` authorises it to DROP a
+        #     column whenever the two disagree — which is precisely what happens
+        #     after a rename or a rollback of the app code.
+        #   - the RLS step was a blind `psql -f` bolted on afterwards. Nothing
+        #     tied it to the schema, so a new tenant table could ship with no
+        #     policy and nothing anywhere would say so.
+        #
+        # NOW: `prisma migrate deploy`, wrapped by packages/db/scripts/migrate-deploy.sh
+        # because the production database needs one specific thing first. It was
+        # built by `db push`, so it has the tables but NO `_prisma_migrations`
+        # table — Prisma has never seen it. Replaying the baseline migration
+        # there would CREATE TABLE over live rows and abort. The script detects
+        # that exact shape (schema present + history absent, and history absent
+        # is proof, since `migrate deploy` creates that table before running
+        # anything) and records the baseline as applied instead of executing it.
+        # After that first pass the history exists and the branch is never taken
+        # again, so the step is idempotent on both an existing and a brand-new
+        # database. Full reasoning in the script's header.
+        #
+        # The RLS migration is NOT skipped on the existing database: its SQL is
+        # idempotent, so applying it restates the policies rather than failing,
+        # and that restatement is worth having — nobody can prove the old
+        # `psql -f` was replayed after the last schema change. The script then
+        # runs a read-only assertion (prisma/sql/rls-verify.sql) that fails the
+        # deploy if any organizationId-carrying table is left unguarded.
         run: |
           ssh -p "${{ vars.DEPLOY_PORT || '22' }}" \
             "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
-            "cd ${{ vars.DEPLOY_PATH }} && docker compose -p auditer --env-file .env -f infra/compose/docker-compose.server.yml run --rm --no-deps -T -w /app/packages/db api bash -lc '
-              DB=postgresql://auditer:auditer@postgres:5432/auditer;
-              DATABASE_URL=\$DB node_modules/.bin/prisma db push --skip-generate --accept-data-loss;
-              psql \$DB -v ON_ERROR_STOP=1 -f prisma/sql/rls.sql'"
+            "cd ${{ vars.DEPLOY_PATH }} && docker compose -p auditer --env-file .env -f infra/compose/docker-compose.server.yml run --rm --no-deps -T -w /app/packages/db api bash scripts/migrate-deploy.sh"
 
       - name: Start services
         run: |

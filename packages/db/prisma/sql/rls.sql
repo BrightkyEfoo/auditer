@@ -9,7 +9,25 @@
 --   SET LOCAL app.current_org_id = '<org>'
 -- (see src/tenant.ts). Policies compare organization_id to that GUC.
 --
--- Applied via `prisma migrate` as a raw-SQL step. Idempotent.
+-- SOURCE OF TRUTH, but NOT what runs on a server. This file is the one place a
+-- human edits the policy set; the copy that actually executes is the newest
+-- prisma/migrations/*_rls*/migration.sql, because `prisma migrate deploy` only
+-- ever runs files it has checksummed. Editing here alone changes nothing in
+-- production — scripts/rls-check.sh fails the build to say so, and the fix is a
+-- NEW `<timestamp>_rls_<change>` migration carrying this file in full.
+--
+-- IDEMPOTENT BY CONSTRUCTION, and that is load-bearing rather than incidental:
+-- it is what lets the whole file be replayed as a migration against a database
+-- that already has the policies (the production one, policed until now by a
+-- `psql -f` nobody could prove had been replayed). CREATE ROLE is guarded by a
+-- pg_roles lookup, the helper is CREATE OR REPLACE, GRANT is repeatable,
+-- ENABLE ROW LEVEL SECURITY is a no-op when already on, and each policy is
+-- DROP ... IF EXISTS'd before being recreated. Keep every future addition to
+-- this file idempotent too, or that replay stops being safe.
+--
+-- The hand-maintained `tenant_tables` list below is checked against the real
+-- catalog by prisma/sql/rls-verify.sql after every deploy: a new table carrying
+-- organizationId that is missing from the list fails the deploy.
 
 -- ── App role (non-owner; RLS applies to it) ──────────────────────────────
 DO $$
