@@ -432,6 +432,14 @@ async function persistResults(
           target: f.target as never,
           package: f.package as never,
           vuln: f.vuln as never,
+          // Denormalised from the blob above, on purpose: the report sorts
+          // every finding by real-world exploitability, and asking Postgres to
+          // order hundreds of rows through a JSON path on every read is the
+          // wrong trade. Writing only the blob left these columns null, so the
+          // enrichment was computed, stored, and then invisible to the one
+          // consumer that exists for it.
+          epssScore: f.vuln?.epssScore ?? null,
+          kevListed: f.vuln?.kevListed ?? null,
           evidence: f.evidence,
           references: f.references,
           fingerprint: f.fingerprint,

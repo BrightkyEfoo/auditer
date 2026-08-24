@@ -1,0 +1,39 @@
+#!/bin/sh
+# Runs jscpd and emits its JSON report on STDOUT.
+#
+# jscpd has no "print to stdout" mode: `--reporters json` always writes
+# `<output>/jscpd-report.json`. The adapter parses stdout — as every adapter
+# here does, because the sandbox runner only returns stdout and mounts the repo
+# read-only — so the report has to be relayed. Without this wrapper the scan
+# would exit 0 with an empty stdout and be recorded as a clean pillar, which is
+# the worst possible failure mode: a hole that reads as a pass.
+#
+# The report is written to the runner's tmpfs at /scratch, never to the mounted
+# repository.
+set -eu
+
+REPO="${1:?usage: run-jscpd <path>}"
+OUT=/scratch/jscpd
+
+mkdir -p "$OUT"
+
+# jscpd exits non-zero when the duplication threshold is exceeded, which is a
+# RESULT and not an error — the adapter's classifyExit treats 0 and 1 alike. We
+# must not let `set -e` turn that into a failed scan.
+jscpd "$REPO" \
+  --reporters json \
+  --output "$OUT" \
+  --mode strict \
+  --silent \
+  >/dev/null 2>&1 || true
+
+REPORT="$OUT/jscpd-report.json"
+if [ ! -f "$REPORT" ]; then
+  # No report at all means jscpd genuinely failed, as opposed to finding
+  # nothing. Say so on stderr and exit non-zero so the scan is recorded as
+  # failed rather than as a clean pillar.
+  echo "run-jscpd: jscpd produced no report at $REPORT" >&2
+  exit 65
+fi
+
+cat "$REPORT"
