@@ -40,8 +40,15 @@ export class LighthouseAdapter implements ScannerAdapter {
   // run on an arm64 one. Not cosign-signed (see
   // infra/docker/scanners/README.md).
   //
-  // NOT YET RUN END-TO-END, and the reasons to replace it are stacking up:
+  // RUN END-TO-END on the x86_64 host with the exact argv below: exit 0, 269 KB
+  // of JSON on stdout, four category scores parsed. The UX pillar works. The
+  // reasons to replace the image anyway are stacking up:
   //
+  // - THE TAG LIES ABOUT THE VERSION. `v8.6.0` ships `lighthouseVersion:
+  //   "8.5.1"` — read out of the report it produced, not assumed. Nothing in
+  //   this codebase repeats the tag as a version (scans record the image digest
+  //   when the tool does not report its own), so no document currently states a
+  //   false version; but any future code that trusts the tag would.
   // - `femtopixel` is an unaffiliated republisher, and this is the container we
   //   point at attacker-influenced URLs with a real Chromium inside it.
   // - v8.6.0 is Lighthouse from 2021. The audit set and the category weights
