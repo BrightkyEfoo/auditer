@@ -90,9 +90,31 @@ export async function prepare(opts: PrepareOpts): Promise<Workspace> {
     // Local mirror/demo: plain clone (cheap, all refs). --filter/--depth need
     // file:// + server-side config, so we skip them for local sources.
   } else if (opts.fullHistory) {
-    // secrets need history + all refs, but no blobs we don't touch.
-    args.push("--filter=blob:none", "--no-single-branch");
+    // FULL clone — deliberately NOT `--filter=blob:none`.
+    //
+    // A blobless clone downloads history without file CONTENT and fetches each
+    // blob lazily from the remote on first access. The secrets scanner reads
+    // every blob in every commit, and it runs in a sandbox with `--network=none`
+    // by design. So every blob fetch failed:
+    //
+    //   fatal: unable to access 'https://github.com/...': Could not resolve host
+    //   failed to scan Git repository
+    //   WRN no leaks found in partial scan
+    //
+    // gitleaks then exited 1 and reported no leaks. The secrets pillar — the
+    // one this product leads with — had never once worked on a real repository,
+    // and it said so in the only way that matters to a customer: "nothing
+    // found". It passed on local test repos purely because the branch above
+    // skips the filter for those.
+    //
+    // The blobs ARE the thing being scanned. Downloading them is not overhead
+    // here, it is the job.
+    args.push("--no-single-branch");
   } else {
+    // Shallow + blobless is safe ONLY because these scanners read the working
+    // tree, which git materialises at checkout. Any scanner that walks history
+    // must request `fullHistory` instead — a lazy blob fetch cannot succeed
+    // from a sandbox with no network.
     args.push("--depth=1", "--single-branch", "--filter=blob:none");
   }
   if (opts.ref) args.push("--branch", opts.ref);
