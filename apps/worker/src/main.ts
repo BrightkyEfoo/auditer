@@ -21,6 +21,7 @@ import { prepare, type Workspace } from "./workspace.js";
 import { mintInstallationToken } from "./github-app.js";
 import { validGitlabToken } from "./gitlab.js";
 import { buildReportHtml } from "./report-html.js";
+import { renderPdf } from "./pdf.js";
 import { buildExecReportHtml, type ExecPillarRow } from "./report-exec.js";
 import { buildDeltaReportHtml } from "./report-delta.js";
 import { buildAttestationHtml } from "./report-attestation.js";
@@ -566,9 +567,15 @@ async function renderReport(job: AuditJob): Promise<void> {
   const document: ReportDocument =
     normalizeReportDocument(job.scopeConfig?.format) ?? DEFAULT_REPORT_DOCUMENT;
 
-  await withTenant(prisma, organizationId, async (tx) => {
+  // The render is deliberately split across TWO short transactions with the
+  // slow work between them. Spawning a container and pushing objects takes
+  // seconds; doing that inside an interactive transaction pins a database
+  // connection for its whole duration and courts the transaction timeout — on
+  // an operation whose only database work is a handful of reads and two
+  // inserts.
+  const prepared = await withTenant(prisma, organizationId, async (tx) => {
     const run = await tx.auditRun.findFirst({ where: { id: auditRunId, organizationId } });
-    if (!run) return;
+    if (!run) return null;
     const repo = run.repositoryId
       ? await tx.repository.findFirst({ where: { id: run.repositoryId } })
       : null;
@@ -728,7 +735,6 @@ async function renderReport(job: AuditJob): Promise<void> {
         break;
     }
 
-    const storage = getStorage();
     // Typed as what it actually is. The renderer produces HTML today; when the
     // paged PDF renderer lands, only `ext`/`contentType` change and the
     // download endpoint follows the row instead of guessing.
@@ -739,10 +745,39 @@ async function renderReport(job: AuditJob): Promise<void> {
     // for a label; the key stays attached to the bytes it describes, and the
     // download endpoint reads the name back from it to title the file the user
     // saves. A key with no such segment predates this and reads as `technique`.
-    const key = storage
-      .buildKey({ organizationId, auditRunId, type: "report", ext: "html" })
-      .replace(/\.html$/, `.${document}.html`);
-    const put = await storage.put(key, html, "text/html");
+    return { html, document };
+  });
+  if (!prepared) return;
+  const { html } = prepared;
+
+  // ── Outside any transaction: object storage and the PDF container ──────
+  const storage = getStorage();
+  const key = storage
+    .buildKey({ organizationId, auditRunId, type: "report", ext: "html" })
+    .replace(/\.html$/, `.${document}.html`);
+  const put = await storage.put(key, html, "text/html");
+
+  // PDF is the format the deliverable is actually read and archived in — a
+  // dirigeant opens a PDF, an auditor files one. Rendered from the SAME HTML,
+  // so the two can never disagree about what the audit found.
+  //
+  // Best-effort by design: `renderPdf` returns null rather than throwing. A
+  // renderer that is down must cost the customer a file format, never the
+  // report itself.
+  const pdf = await renderPdf(html);
+  const pdfPut = pdf
+    ? await storage.put(
+        storage
+          .buildKey({ organizationId, auditRunId, type: "pdf", ext: "pdf" })
+          .replace(/\.pdf$/, `.${document}.pdf`),
+        pdf,
+        "application/pdf",
+      )
+    : null;
+
+  const RETENTION_MS = 730 * 24 * 60 * 60 * 1000;
+
+  await withTenant(prisma, organizationId, async (tx) => {
     const artifact = await tx.artifact.create({
       data: {
         organizationId,
@@ -756,18 +791,43 @@ async function renderReport(job: AuditJob): Promise<void> {
         // (apps/web/lib/legal.ts) keeps reports 24 months; a duration that is
         // only written in a document cannot be enforced, and this column is
         // what apps/api/src/account/retention.service.ts actually purges on.
-        retentionExpiresAt: new Date(Date.now() + 730 * 24 * 60 * 60 * 1000),
+        retentionExpiresAt: new Date(Date.now() + RETENTION_MS),
       },
     });
+
+    const pdfArtifact = pdfPut
+      ? await tx.artifact.create({
+          data: {
+            organizationId,
+            auditRunId,
+            // Typed as what it is. Storing a PDF under `report` — or HTML under
+            // `pdf` — is what makes a row lie about its own content and the
+            // download endpoint serve the wrong type.
+            type: "pdf",
+            storageKey: pdfPut.key,
+            contentType: "application/pdf",
+            sizeBytes: pdfPut.sizeBytes,
+            checksum: pdfPut.checksum,
+            retentionExpiresAt: new Date(Date.now() + RETENTION_MS),
+          },
+        })
+      : null;
 
     if (reportId) {
       await tx.report.update({
         where: { id: reportId },
-        data: { status: "ready", pdfArtifactId: artifact.id, generatedAt: new Date() },
+        data: {
+          status: "ready",
+          // Point at the PDF when there is one, at the HTML when the renderer
+          // was unavailable — the download endpoint follows this row, so the
+          // customer gets the best format that actually exists.
+          pdfArtifactId: pdfArtifact?.id ?? artifact.id,
+          generatedAt: new Date(),
+        },
       });
     }
   });
-  await publisher.log(auditRunId, `report rendered: ${document} (HTML artifact stored)`);
+  await publisher.log(auditRunId, `report rendered: ${document}`);
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────

@@ -1,0 +1,79 @@
+#!/bin/sh
+# Renders one local HTML file to a PDF and writes that PDF to stdout, base64.
+#
+# Why base64 on stdout rather than a PDF file the caller picks up: the sandbox
+# runner (packages/audit-engine/src/sandbox/docker-gvisor-runner.ts) hands back
+# stdout and nothing else, and every mount it makes for a scanner is read-only.
+# Returning bytes through stdout therefore needs no writable bind mount, no
+# uid-matching on the host directory, and no cleanup path that can leave a
+# half-written PDF behind. base64 because that stdout is decoded as UTF-8, which
+# would mangle raw PDF bytes beyond repair.
+#
+# Chromium's own diagnostics are pushed to stderr, so stdout carries the encoded
+# PDF and nothing else. Those diagnostics are noisy whatever we do — headless
+# Chromium still tries to bring up a GPU process and logs the whole ANGLE/Vulkan
+# failure before falling back — so every message this script emits itself is
+# prefixed "render-pdf:", and the caller reads those in preference to the last
+# line of stderr.
+
+set -eu
+
+[ $# -eq 1 ] || { echo "render-pdf: usage: render-pdf <html-file>" >&2; exit 64; }
+SRC=$1
+[ -r "$SRC" ] || { echo "render-pdf: cannot read $SRC" >&2; exit 66; }
+
+# Every path Chromium writes to must land on the tmpfs the runner mounts at
+# /scratch: the container root filesystem is read-only, and Chromium aborts at
+# startup when it cannot create its profile directory. TMPDIR matters as much as
+# HOME here — Chromium falls back to a hardcoded /tmp otherwise, which does not
+# exist as a writable path under ReadonlyRootfs.
+SCRATCH=${SCRATCH_DIR:-/scratch}
+export HOME="$SCRATCH"
+export TMPDIR="$SCRATCH"
+export XDG_CONFIG_HOME="$SCRATCH/config"
+export XDG_CACHE_HOME="$SCRATCH/cache"
+mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME"
+OUT="$SCRATCH/report.pdf"
+
+# --no-sandbox is a real weakening and is not hidden here. Chromium's own
+# sandbox needs CLONE_NEWUSER, which the runner denies (CapDrop ALL +
+# no-new-privileges), so keeping it on means Chromium refuses to start. The
+# trade is deliberate: the container IS the sandbox — no network, no
+# capabilities, read-only rootfs, nobody uid, one-shot and force-removed — so a
+# renderer compromise buys an attacker a process that can read one HTML file it
+# was already given and write to a tmpfs that is discarded seconds later.
+#
+# Paper size comes from the document, not from a flag: headless Chromium has no
+# CLI option for it and honours the `@page { size: A4 }` rule the report already
+# declares. --no-pdf-header-footer removes the browser's own date/URL furniture,
+# which would otherwise print on top of the report's header and footer.
+chromium \
+  --headless \
+  --no-sandbox \
+  --disable-gpu \
+  --disable-software-rasterizer \
+  --disable-dev-shm-usage \
+  --no-first-run \
+  --no-default-browser-check \
+  --disable-background-networking \
+  --disable-extensions \
+  --disable-sync \
+  --disable-default-apps \
+  --mute-audio \
+  --hide-scrollbars \
+  --user-data-dir="$SCRATCH/profile" \
+  --crash-dumps-dir="$SCRATCH/crash" \
+  --disk-cache-dir="$SCRATCH/cache" \
+  --no-pdf-header-footer \
+  --run-all-compositor-stages-before-draw \
+  --virtual-time-budget=15000 \
+  --print-to-pdf="$OUT" \
+  "file://$SRC" 1>&2
+
+# Chromium exits 0 on some failures that leave no file at all, so the artifact
+# is checked rather than the exit code.
+[ -s "$OUT" ] || { echo "render-pdf: chromium produced no PDF" >&2; exit 70; }
+
+# busybox base64 wraps at 76 columns; the caller strips whitespace before
+# decoding, so no -w0 (which busybox does not accept anyway).
+base64 "$OUT"
