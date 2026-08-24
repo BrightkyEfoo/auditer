@@ -148,6 +148,22 @@ jobs:
             "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
             "cd ${{ vars.DEPLOY_PATH }} && docker compose -p auditer --env-file .env -f infra/compose/docker-compose.server.yml --profile ops run --rm -T vuln-feeds-refresh || true"
 
+      - name: Refresh offline OSV database (non-fatal)
+        # The archives the SCA pillar matches dependencies against, one per
+        # ecosystem. The host used to carry exactly one — npm — placed by hand
+        # with nothing to renew it, so every Python, Go, Java, PHP, Ruby, Rust
+        # and .NET repository got no dependency verdict at all (osv-scanner
+        # exits 127 on `could not find local databases for ecosystems: …`).
+        #
+        # Non-fatal for the same reason as the feeds above: a bucket that is
+        # briefly unreachable must not block shipping code, and the refresher
+        # keeps the previous archive on failure rather than leaving a gap.
+        # Requests are conditional, so an unchanged archive costs one round trip.
+        run: |
+          ssh -p "${{ vars.DEPLOY_PORT || '22' }}" \
+            "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
+            "cd ${{ vars.DEPLOY_PATH }} && docker compose -p auditer --env-file .env -f infra/compose/docker-compose.server.yml --profile ops run --rm -T osv-db-refresh || true"
+
       - name: DB migrations (idempotent)
         # WAS: `prisma db push --accept-data-loss` followed by `psql -f rls.sql`.
         # Two defects, both fatal the day a paying customer has rows here:

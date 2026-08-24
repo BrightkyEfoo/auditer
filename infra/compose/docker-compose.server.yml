@@ -211,6 +211,33 @@ services:
     volumes:
       - "${VULN_FEEDS_DIR:-/home/brightky/auditer-vuln-feeds}:${VULN_FEEDS_DIR:-/home/brightky/auditer-vuln-feeds}"
 
+  # Same shape, different database: the OFFLINE OSV archives the SCA pillar
+  # matches dependencies against, one per ecosystem.
+  #
+  #   docker compose --profile ops run --rm osv-db-refresh
+  #
+  # This one closes a hole rather than keeping data fresh. The host carried a
+  # single archive — `npm` — dropped there by hand, with nothing to renew it. On
+  # a Python or Go repository osv-scanner printed `could not find local
+  # databases for ecosystems: Go, PyPI` and exited 127: the SCA pillar had no
+  # verdict at all outside the JavaScript ecosystem.
+  #
+  # Requests are conditional on what is already on disk, so a deploy that
+  # changes nothing transfers nothing — without that, every push would move the
+  # 210 MiB npm archive to learn it had not changed.
+  osv-db-refresh:
+    <<: *app-image
+    profiles: ["ops"]
+    command:
+      - node
+      - packages/audit-engine/dist/enrich/refresh-osv-db.js
+      - "--dir=${OSV_DB_DIR:-/home/brightky/auditer-osv-db}"
+    environment:
+      NODE_ENV: production
+      OSV_DB_HOST_PATH: "${OSV_DB_DIR:-/home/brightky/auditer-osv-db}"
+    volumes:
+      - "${OSV_DB_DIR:-/home/brightky/auditer-osv-db}:${OSV_DB_DIR:-/home/brightky/auditer-osv-db}"
+
   web:
     <<: *app-image
     command: ["node_modules/.bin/next", "start", "-p", "3000"]
