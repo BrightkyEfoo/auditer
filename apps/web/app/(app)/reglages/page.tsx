@@ -17,15 +17,19 @@ const PROVIDER_FR: Record<string, string> = {
  * What we hold, where it lives, and how to get rid of it — on one page.
  *
  * These durations must stay identical to the ones published in
- * apps/web/lib/legal.ts and to the constants in the api's RetentionService.
- * Three copies of a number is two too many, but the middle one is a legal
- * document and the last one is a purge: they are checked against each other by
- * hand, and both files say so.
+ * apps/web/lib/legal.ts and to the RETENTION constants in
+ * packages/retention/src/purge.ts. Three copies of a number is two too many,
+ * but the middle one is a legal document and the last one is a purge: they are
+ * checked against each other by hand, and all three files say so.
+ *
+ * The cadence in the right-hand column is likewise a claim about code: it holds
+ * only as long as apps/worker/src/retention-scheduler.ts registers its nightly
+ * BullMQ Job Scheduler.
  */
 const RETENTION = [
   ["Code source cloné", "Jamais conservé — détruit à la fin du relevé"],
-  ["Findings, rapports et relevés", "24 mois — purge manuelle"],
-  ["Journaux d'exécution des scanners", "90 jours — purge manuelle"],
+  ["Findings, rapports et relevés", "24 mois — purge automatique chaque nuit"],
+  ["Journaux d'exécution des scanners", "90 jours — purge automatique chaque nuit"],
   ["Jetons d'accès aux dépôts", "Chiffrés, détruits à la révocation"],
   ["Compte", "Tant qu'il est actif — suppression immédiate"],
 ];
@@ -129,9 +133,11 @@ export default async function SettingsPage() {
           ))}
         </ul>
         <p className="mt-5 max-w-[70ch] text-data text-mute">
-          Les deux purges signalées « manuelle » sont écrites et appliquent bien ces durées,
-          mais aucun ordonnanceur ne les déclenche encore : nous les lançons à la main. Le
-          détail figure dans la{" "}
+          La purge tourne toutes les nuits à 03h30 UTC et applique exactement ces durées.
+          Chaque suppression est consignée dans le journal d&apos;activité de votre
+          organisation, avec le décompte de ce qui est parti, et ce journal figure dans votre
+          export JSON. Passant une fois par jour, elle peut laisser une donnée survivre au
+          plus vingt-quatre heures à son échéance. Le détail figure dans la{" "}
           <Link href="/legal/confidentialite" className="ul-draw text-acid">
             politique de confidentialité
           </Link>

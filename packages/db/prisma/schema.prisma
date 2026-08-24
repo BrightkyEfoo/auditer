@@ -612,9 +612,16 @@ model ActivityLog {
   entityId       String?
   ip             String?
   userAgent      String?
+  /// Structured payload of the event. Added for the nightly retention purge,
+  /// which acts on several entity types at once and whose whole value as a
+  /// record is the COUNTS — something entityType/entityId cannot carry. Nullable
+  /// and additive, so the deploy's `prisma db push` applies it without touching
+  /// existing rows.
+  detail         Json?
   createdAt      DateTime @default(now())
 
   @@index([organizationId, createdAt])
+  @@index([organizationId, action, createdAt])
   @@map("activity_logs")
 }
 

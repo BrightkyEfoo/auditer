@@ -4,6 +4,7 @@ import {
   Query,
   Req,
   HttpCode,
+  ConflictException,
   NotFoundException,
 } from "@nestjs/common";
 import type { Request } from "express";
@@ -26,8 +27,12 @@ import { RetentionService, type PurgeReport } from "./retention.service.js";
  * Wrong token also 404s rather than 403 — an unauthenticated caller learns
  * nothing about whether the route exists.
  *
- * Until a scheduler exists (there is none in this repository), this is the ONLY
- * thing that applies the durations published in apps/web/lib/legal.ts. Run it:
+ * This is no longer the only trigger: a BullMQ Job Scheduler in the worker
+ * (apps/worker/src/retention-scheduler.ts) runs the same purge every night. The
+ * endpoint stays because the privacy policy promises a purge "sous 30 jours" on
+ * request, and an operator answering one must not have to wait for 03:30 UTC.
+ * Both paths call the same function and take the same Valkey lock, so they
+ * cannot run at once. Run it:
  *
  *   curl -X POST -H "x-admin-token: $ADMIN_PURGE_TOKEN" \
  *        "$API_URL/api/admin/retention/purge?dryRun=1"
@@ -51,8 +56,17 @@ export class RetentionController {
 
   @Post("purge")
   @HttpCode(200)
-  purge(@Req() req: Request, @Query("dryRun") dryRun?: string): Promise<PurgeReport> {
+  async purge(@Req() req: Request, @Query("dryRun") dryRun?: string): Promise<PurgeReport> {
     assertOperator(req);
-    return this.retention.purge({ dryRun: dryRun === "1" || dryRun === "true" });
+    const report = await this.retention.purge({
+      dryRun: dryRun === "1" || dryRun === "true",
+    });
+    // Lock held elsewhere. 409 rather than an empty report: a body full of
+    // zeros would read as "nothing had expired", which is the opposite of
+    // "someone else is purging right now".
+    if (!report) {
+      throw new ConflictException("a retention purge is already running");
+    }
+    return report;
   }
 }

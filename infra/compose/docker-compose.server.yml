@@ -131,6 +131,13 @@ services:
       # directory is really bind-mounted into both, read-only. Enrichment is a
       # control-plane step: scanner sandboxes have no network and never see it.
       VULN_FEEDS_HOST_PATH: "${VULN_FEEDS_DIR:-/home/brightky/auditer-vuln-feeds}"
+      # Secret partagé de POST /api/admin/retention/purge. La purge nocturne
+      # n'en a PAS besoin (l'ordonnanceur tourne dans le worker, sans HTTP) —
+      # ce jeton ne sert qu'à déclencher une purge à la main, notamment en
+      # simulation avant le premier passage réel. Absent ou trop court ⇒ la
+      # route répond 404, ce qui est le bon défaut : une route de suppression
+      # non configurée doit être invisible, pas ouverte.
+      ADMIN_PURGE_TOKEN: "${ADMIN_PURGE_TOKEN:-}"
     volumes:
       - "${VULN_FEEDS_DIR:-/home/brightky/auditer-vuln-feeds}:${VULN_FEEDS_DIR:-/home/brightky/auditer-vuln-feeds}:ro"
     ports: ["127.0.0.1:3301:3001"]
@@ -153,6 +160,26 @@ services:
       # scanner containers; refreshed out-of-band).
       OSV_DB_HOST_PATH: "${OSV_DB_DIR:-/home/brightky/auditer-osv-db}"
       WORKER_CONCURRENCY: "2"
+      # ── Purge de rétention ────────────────────────────────────────────
+      # Le worker enregistre au démarrage un Job Scheduler BullMQ sur Valkey
+      # (voir apps/worker/src/retention-scheduler.ts). Aucune variable n'est
+      # nécessaire pour qu'il tourne : le défaut applique les durées publiées
+      # dans apps/web/lib/legal.ts, tous les jours à 03h30 UTC.
+      #
+      # Valkey persiste (--appendonly yes, service ci-dessus) : la planification
+      # survit à un redéploiement du worker. Plusieurs répliques de worker
+      # convergent sur UN seul ordonnanceur (upsert par identifiant) et un seul
+      # consommateur obtient chaque job (déplacement atomique côté Redis).
+      #
+      # PREMIER DÉPLOIEMENT : poser RETENTION_PURGE_DRY_RUN=1 dans le .env du
+      # serveur, déployer, lire les compteurs le lendemain dans
+      # `docker compose -p auditer logs worker | grep retention`, puis retirer
+      # la variable et redéployer. Tant qu'elle vaut 1, RIEN n'est supprimé et
+      # le texte publié n'est pas appliqué — le worker le journalise en WARN à
+      # chaque exécution.
+      RETENTION_PURGE_DRY_RUN: "${RETENTION_PURGE_DRY_RUN:-0}"
+      # Cadence (cron BullMQ, lu en UTC). Vide ⇒ 03h30 UTC.
+      RETENTION_PURGE_CRON: "${RETENTION_PURGE_CRON:-}"
     volumes:
       # SAME absolute path in and out, so host-spawned scanner containers can
       # bind-mount the cloned repo.

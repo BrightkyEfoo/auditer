@@ -15,10 +15,14 @@
  * export that did not exist, and three retention periods that nothing enforced.
  *
  * So, concretely, before changing a sentence here:
- *   - a duration must exist as a constant in
- *     apps/api/src/account/retention.service.ts and be applied by purge();
+ *   - a duration must exist as a constant in packages/retention/src/purge.ts
+ *     and be applied by runRetentionPurge();
  *   - an action "depuis l'interface" must have BOTH an endpoint and a control
  *     in the app that reaches it;
+ *   - a cadence must exist as a scheduler somewhere. "Chaque nuit à 03h30 UTC"
+ *     is true only because apps/worker/src/retention-scheduler.ts registers a
+ *     BullMQ Job Scheduler at that pattern; delete that file and this sentence
+ *     becomes a lie the same day;
  *   - if a mechanism exists but is triggered by hand, SAY SO. "Nous le faisons
  *     à la main" is a sentence a regulator can live with. "C'est automatique",
  *     when it is not, is not.
@@ -62,7 +66,10 @@ export const LEGAL_DOCS: Record<string, LegalDoc> = {
     title: "Politique de confidentialité",
     summary:
       "Ce que nous collectons, ce que nous ne gardons pas — à commencer par votre code source —, combien de temps nous conservons le reste, à qui nous le transmettons, et comment exercer vos droits.",
-    version: "1.1",
+    // 1.2 — la purge de rétention est planifiée (BullMQ, chaque nuit à 03h30
+    // UTC). La version précédente devait écrire qu'aucun ordonnanceur ne la
+    // déclenchait ; ce n'est plus vrai, donc la phrase est partie.
+    version: "1.2",
     updated: "24 août 2026",
     law: "RGPD (Règlement UE 2016/679), droit camerounais",
     sections: [
@@ -118,10 +125,12 @@ export const LEGAL_DOCS: Record<string, LegalDoc> = {
             "Journaux d’exécution des scanners et journaux techniques : 90 jours. Sont concernés la sortie brute des moteurs, les journaux de conteneur et les messages d’erreur attachés à chaque exécution.",
             "Jetons d’accès VCS : jusqu’à révocation, qui se fait depuis les réglages. Le chiffré est alors écrasé et la connexion supprimée. La révocation chez GitHub ou GitLab, elle, se fait chez eux : nous n’avons pas le pouvoir de désinstaller une application à votre place.",
             "Attestations d’autorisation des scans réseau : 24 mois, parce qu’elles constituent la preuve de l’autorisation d’un scan et protègent la cible, qui est un tiers. Elles survivent volontairement à la suppression du compte et expirent sur leur propre horloge.",
-            "Sessions : 30 jours, la durée du cookie. Les sessions expirées sont effacées de la base par la même purge que ci-dessous.",
+            "Sessions : 30 jours, la durée du cookie. Les sessions expirées sont effacées de la base par la purge quotidienne décrite ci-dessous.",
             "Code source cloné : la durée du run, et rien de plus. Voir la section précédente.",
           ],
-          "Une précision que nous préférons écrire plutôt que laisser croire : les durées de 90 jours et de 24 mois ci-dessus sont bien implémentées — une fonction de purge existe et applique exactement ces échéances — mais AUCUN ORDONNANCEUR NE LA DÉCLENCHE ENCORE. Nous la lançons à la main. Concrètement, une donnée peut donc rester au-delà de son échéance jusqu’à notre prochaine exécution. Si cela vous concerne, écrivez-nous : nous purgeons sous 30 jours à compter de votre demande. Ce paragraphe disparaîtra le jour où la purge sera planifiée, pas avant.",
+          "Ces durées ne sont pas déclaratives : une tâche automatique les applique chaque nuit, à 03h30 UTC — 04h30 à Douala. Elle efface les relevés de plus de 24 mois avec les findings, les rapports et les fichiers qui en dépendent ; les journaux d’exécution de plus de 90 jours, aussi bien les sorties des moteurs conservées comme fichiers que les messages d’erreur attachés à chaque exécution ; les fichiers dont l’échéance propre est dépassée ; les attestations d’autorisation de plus de 24 mois ; et les sessions expirées.",
+          "Deux précisions, parce qu’une purge quotidienne n’est pas une purge instantanée. La tâche passe une fois par jour : une donnée peut donc survivre à son échéance jusqu’au passage suivant, vingt-quatre heures au plus. Et si des analyses sont en cours à l’heure prévue, elle patiente pour ne pas les ralentir — deux heures au maximum, après quoi elle s’exécute quand même : une échéance de conservation ne se négocie pas contre la charge du serveur.",
+          "Chaque suppression est consignée dans le journal d’activité de votre organisation, avec le décompte de ce qui est parti, catégorie par catégorie ; un passage qui ne trouve rien à effacer chez vous n’y écrit rien. Ce journal fait partie de votre export JSON : vous pouvez donc vérifier vous-même que ces échéances sont tenues, plutôt que de nous croire sur parole.",
           "Ce qui, en revanche, ne dépend d’aucune purge : la suppression d’un dépôt, d’un relevé, d’une connexion ou du compte est exécutée au moment où vous la demandez, dans la seconde.",
         ],
       },

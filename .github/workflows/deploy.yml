@@ -50,6 +50,7 @@ jobs:
           SANDBOX_RUNTIME=${{ vars.SANDBOX_RUNTIME }}
           AUTH_DEV_HEADERS=${{ vars.AUTH_DEV_HEADERS }}
           BETTER_AUTH_SECRET=${{ secrets.BETTER_AUTH_SECRET }}
+          ADMIN_PURGE_TOKEN=${{ secrets.ADMIN_PURGE_TOKEN }}
           ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_APP_ID=${{ secrets.GH_APP_ID }}
           GITHUB_APP_SLUG=${{ vars.GH_APP_SLUG }}
@@ -71,6 +72,17 @@ jobs:
           ssh -p "${{ vars.DEPLOY_PORT || '22' }}" \
             "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
             "cd ${{ vars.DEPLOY_PATH }} && docker build -t auditer/semgrep-rules:1.99.0-2 infra/docker/scanners/semgrep"
+
+      - name: Build report renderer image
+        # Headless Chromium that turns the report HTML into the PDF deliverable
+        # (apps/worker/src/pdf.ts). Same reasoning as the scanner images above:
+        # built here, resolved by tag from the local daemon, never pulled. Kept
+        # out of the app image because Chromium and its dependency closure is
+        # ~693 MB that api and web would carry for nothing.
+        run: |
+          ssh -p "${{ vars.DEPLOY_PORT || '22' }}" \
+            "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
+            "cd ${{ vars.DEPLOY_PATH }} && docker build -t auditer/chromium-pdf:136.0.7103.113-1 infra/docker/scanners/chromium"
 
       - name: Build app image
         # Build BEFORE the schema bootstrap, start AFTER it. Starting the app

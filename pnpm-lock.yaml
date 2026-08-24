@@ -35,6 +35,9 @@ importers:
       '@auditer/queue':
         specifier: workspace:*
         version: link:../../packages/queue
+      '@auditer/retention':
+        specifier: workspace:*
+        version: link:../../packages/retention
       '@auditer/storage':
         specifier: workspace:*
         version: link:../../packages/storage
@@ -151,6 +154,9 @@ importers:
       '@auditer/queue':
         specifier: workspace:*
         version: link:../../packages/queue
+      '@auditer/retention':
+        specifier: workspace:*
+        version: link:../../packages/retention
       '@auditer/storage':
         specifier: workspace:*
         version: link:../../packages/storage
@@ -275,6 +281,22 @@ importers:
       ioredis:
         specifier: ^5.4.2
         version: 5.11.1
+    devDependencies:
+      '@auditer/config':
+        specifier: workspace:*
+        version: link:../config
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
+  packages/retention:
+    dependencies:
+      '@auditer/db':
+        specifier: workspace:*
+        version: link:../db
+      '@auditer/storage':
+        specifier: workspace:*
+        version: link:../storage
     devDependencies:
       '@auditer/config':
         specifier: workspace:*

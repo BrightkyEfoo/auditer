@@ -15,6 +15,7 @@
     "@auditer/crypto": "workspace:*",
     "@auditer/db": "workspace:*",
     "@auditer/queue": "workspace:*",
+    "@auditer/retention": "workspace:*",
     "@auditer/storage": "workspace:*",
     "@auditer/types": "workspace:*",
     "@octokit/auth-app": "^7.1.3",
