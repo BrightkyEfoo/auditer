@@ -157,7 +157,7 @@ export function Chip({
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 border px-2 py-0.5 font-mono text-label uppercase",
+        "enter inline-flex items-center gap-1.5 border px-2 py-0.5 font-mono text-label uppercase",
         tones[tone],
         className,
       )}
@@ -211,7 +211,7 @@ export function Field({
       <span className="label block text-ash">{label}</span>
       <div className="mt-2">{children}</div>
       {error ? (
-        <span className="mt-1.5 block font-mono text-label text-critical">{error}</span>
+        <span className="enter-error mt-1.5 block font-mono text-label text-critical">{error}</span>
       ) : hint ? (
         <span className="mt-1.5 block font-mono text-label text-mute">{hint}</span>
       ) : null}
@@ -236,7 +236,7 @@ export function Empty({
   action?: ReactNode;
 }) {
   return (
-    <div className="border border-dashed border-line px-6 py-14 text-center">
+    <div className="enter border border-dashed border-line px-6 py-14 text-center">
       <div className="mx-auto mb-4 h-px w-10 bg-line-bright" />
       <p className="font-display text-lede font-medium text-mineral">{title}</p>
       <p className="mx-auto mt-2 max-w-[46ch] text-data text-mute">{body}</p>

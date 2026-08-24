@@ -182,7 +182,7 @@ export function CredentialsForm({ mode }: { mode: "signup" | "login" }) {
         )}
 
         {error && (
-          <p role="alert" className="border-l-2 border-critical bg-critical/5 px-4 py-3 text-data text-critical">
+          <p role="alert" className="enter-error border-l-2 border-critical bg-critical/5 px-4 py-3 text-data text-critical">
             {error}
           </p>
         )}

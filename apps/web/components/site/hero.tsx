@@ -2,6 +2,7 @@
 
 import { ButtonLink } from "@/components/ui";
 import { Parallax, CountUp, LineReveal, ScrollReadout } from "@/components/motion";
+import { BootSequence } from "@/components/site/boot";
 
 /**
  * Hero as a typographic poster with a real instrument readout beside it.
@@ -83,7 +84,8 @@ export function Hero() {
         {/* ── Readout ────────────────────────────────────────────────── */}
         <div className="col-span-12 lg:col-span-5 lg:pl-[6%]">
           <Parallax speed={-0.07}>
-            <div className="ticked relative border border-line-bright bg-slate">
+            <div className="ticked relative overflow-hidden border border-line-bright bg-slate">
+              <BootSequence />
               {/* Scan sweep — the one ambient animation on the page. */}
               <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
                 <div className="h-px w-full bg-acid/25 [animation:sweep-y_3.2s_linear_3]" />

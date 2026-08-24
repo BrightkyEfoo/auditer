@@ -1,4 +1,4 @@
-import { ENGINES, PILLARS, PIPELINE, GUARANTEES } from "@/lib/content";
+import { ENGINES, PILLARS, GUARANTEES } from "@/lib/content";
 import { SectionMark, ButtonLink, Chip } from "@/components/ui";
 import { Reveal, Parallax } from "@/components/motion";
 
@@ -98,44 +98,6 @@ export function Pillars() {
             </Reveal>
           ))}
         </ul>
-      </div>
-    </section>
-  );
-}
-
-/* ── [03] Pipeline ──────────────────────────────────────────────────────── */
-
-export function Pipeline() {
-  return (
-    <section id="pipeline" className="section scroll-mt-16 border-t border-line bg-void">
-      <div className="shell">
-        <Reveal>
-          <SectionMark index="03">Le trajet d&apos;un relevé</SectionMark>
-        </Reveal>
-
-        <Reveal delay={80}>
-          <h2 className="h-xl mt-12 max-w-[20ch]">
-            Cinq étapes entre votre dépôt et le rapport.
-          </h2>
-        </Reveal>
-
-        <ol className="mt-16 grid grid-cols-1 gap-px bg-line sm:grid-cols-2 lg:grid-cols-5">
-          {PIPELINE.map((s, i) => (
-            <Reveal as="li" key={s.index} delay={i * 70} className="bg-void">
-              <div className="flex h-full flex-col p-6">
-                <div className="flex items-center gap-3">
-                  <span className="font-mono text-label text-acid">{s.index}</span>
-                  <span aria-hidden className="h-px flex-1 origin-left animate-trace-x bg-line-bright" />
-                </div>
-                <h3 className="mt-6 font-display text-lede font-bold tracking-display">{s.title}</h3>
-                <p className="mt-3 flex-1 text-data text-mute">{s.body}</p>
-                <p className="mt-6 border-t border-line pt-3 font-mono text-label uppercase text-acid-dim">
-                  {s.stamp}
-                </p>
-              </div>
-            </Reveal>
-          ))}
-        </ol>
       </div>
     </section>
   );

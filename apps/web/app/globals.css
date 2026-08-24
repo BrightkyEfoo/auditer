@@ -274,6 +274,44 @@
     }
   }
 
+  /* ── Entry states, in CSS ─────────────────────────────────────────
+     `@starting-style` + `transition-behavior: allow-discrete` are Baseline
+     since August 2024. Together they animate an element appearing FROM
+     `display: none` with no JavaScript, no mount state and no presence
+     wrapper — which is what makes error messages, chips and empty states feel
+     acknowledged rather than simply swapped in.
+
+     The `allow-discrete` on `display` is the part everyone forgets: without
+     it the display change is instantaneous and cancels every other property
+     in the same transition. */
+  .enter {
+    transition:
+      opacity 260ms var(--ease-out),
+      transform 260ms var(--ease-out),
+      display 260ms allow-discrete;
+  }
+  @starting-style {
+    .enter {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+  }
+
+  /* An error has to read as an answer to what was just typed, so it arrives
+     from the field above it rather than fading in place. */
+  .enter-error {
+    transition:
+      opacity 200ms var(--ease-out),
+      transform 200ms var(--ease-out),
+      display 200ms allow-discrete;
+  }
+  @starting-style {
+    .enter-error {
+      opacity: 0;
+      transform: translateY(-6px);
+    }
+  }
+
   /* ── Masked line reveal ───────────────────────────────────────────
      Display lines rise out of their own clipping box instead of fading in.
      The mask is what separates a considered reveal from `opacity: 0 → 1`;
