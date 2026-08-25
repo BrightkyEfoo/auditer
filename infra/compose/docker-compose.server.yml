@@ -232,6 +232,35 @@ services:
   # Requests are conditional on what is already on disk, so a deploy that
   # changes nothing transfers nothing — without that, every push would move the
   # 210 MiB npm archive to learn it had not changed.
+  # One-shot smoke test of EVERY scanner: real image, real argv, real sandbox,
+  # against a fixture repository built to trip each one exactly once.
+  #
+  #   docker compose --profile ops run --rm engines-verify
+  #
+  # Six engines were found dead in production in a single afternoon, each by
+  # running its command by hand and reading the error. `pnpm build` was green
+  # throughout — a type checker cannot know that a flag was dropped upstream,
+  # that an image ships without its rules, or that a container cannot write
+  # where the tool expects to. Only running it knows.
+  #
+  # Needs what the worker needs: the socket-proxy to spawn containers, and the
+  # workspace directory at the SAME absolute path inside and out, so the fixture
+  # it writes can be bind-mounted into a scanner.
+  engines-verify:
+    <<: *app-image
+    profiles: ["ops"]
+    command:
+      - node
+      - packages/audit-engine/dist/verify/verify-engines.js
+    environment:
+      NODE_ENV: production
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
+      SANDBOX_RUNTIME: "${SANDBOX_RUNTIME:-runsc}"
+      WORKSPACE_ROOT: "${WS_DIR:-/home/brightky/auditer-workspaces}"
+      OSV_DB_HOST_PATH: "${OSV_DB_DIR:-/home/brightky/auditer-osv-db}"
+    volumes:
+      - "${WS_DIR:-/home/brightky/auditer-workspaces}:${WS_DIR:-/home/brightky/auditer-workspaces}"
+
   osv-db-refresh:
     <<: *app-image
     profiles: ["ops"]
