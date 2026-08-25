@@ -121,15 +121,17 @@ export class DockerGvisorRunner implements SandboxRunner {
       // findings. Every scanner under 64 KiB — gitleaks, trivy, zizmor, hadolint
       // — was unaffected, which is why this survived: it works on a toy
       // repository and fails on exactly the repositories customers bring.
+      // Wait on the SOURCE stream, not on the demuxed PassThroughs:
+      // `modem.demuxStream` writes into them but never ends them, so an `end`
+      // listener there fires never — the first version of this fix waited 30
+      // seconds per engine and refused every scan. The PassThroughs are in
+      // flowing mode (a `data` listener is attached above), so every byte the
+      // demuxer writes is delivered synchronously; once the source is done,
+      // everything it carried is already in the buffers.
       const drained = new Promise<void>((resolve) => {
-        let pending = 2;
-        const done = (): void => {
-          if (--pending === 0) resolve();
-        };
-        outPt.once("end", done);
-        outPt.once("error", done);
-        errPt.once("end", done);
-        errPt.once("error", done);
+        stream.once("end", () => resolve());
+        stream.once("close", () => resolve());
+        stream.once("error", () => resolve());
       });
 
       await container.start();
