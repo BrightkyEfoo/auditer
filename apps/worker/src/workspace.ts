@@ -29,6 +29,14 @@ export interface Workspace {
   path: string;
   manifests: string[];
   /**
+   * Repo-relative paths of every Dockerfile in the checkout.
+   *
+   * Separate from `manifests`, which is basenames only. hadolint has no
+   * recursive mode and ships distroless — no shell to expand a glob — so it
+   * needs real paths or it lints nothing.
+   */
+  dockerfiles: string[];
+  /**
    * The commit actually analysed, read back from the clone rather than taken
    * from the request. Every report asserts "the result holds for the commit
    * shown above" and prints "non déclaré" instead, because nothing ever
@@ -166,10 +174,12 @@ export async function prepare(opts: PrepareOpts): Promise<Workspace> {
   }
 
   const manifests = await detectManifests(dir);
+  const dockerfiles = await findDockerfiles(dir);
 
   return {
     path: dir,
     manifests,
+    dockerfiles,
     commitSha,
     cleanup: () => rm(dir, { recursive: true, force: true }),
   };
@@ -206,4 +216,63 @@ async function detectManifests(dir: string): Promise<string[]> {
     /* no workflows directory */
   }
   return [...found];
+}
+
+/** Directories never worth walking: vendored code and VCS internals. */
+const SKIP_DIRS = new Set([
+  ".git",
+  "node_modules",
+  "vendor",
+  "dist",
+  "build",
+  ".next",
+  ".turbo",
+  "target",
+  "__pycache__",
+]);
+
+/** A repository with more Dockerfiles than this is not what the depth bound is for. */
+const MAX_DOCKERFILES = 200;
+const MAX_DEPTH = 6;
+
+/**
+ * Walk the checkout for Dockerfiles.
+ *
+ * Bounded on purpose. The workspace is attacker-supplied — a repository can
+ * carry a directory tree deep and wide enough to make an unbounded walk the
+ * cheapest denial of service in the product — so depth, count and the skip list
+ * are limits, not optimisations. Symlinks are never followed for the same
+ * reason: `withFileTypes` reports a link as a link, and a link is neither
+ * recursed into nor reported as a Dockerfile.
+ */
+async function findDockerfiles(root: string): Promise<string[]> {
+  const found: string[] = [];
+
+  async function walk(dir: string, rel: string, depth: number): Promise<void> {
+    if (depth > MAX_DEPTH || found.length >= MAX_DOCKERFILES) return;
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (found.length >= MAX_DOCKERFILES) return;
+      const childRel = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        if (SKIP_DIRS.has(e.name) || e.name.startsWith(".")) continue;
+        await walk(join(dir, e.name), childRel, depth + 1);
+      } else if (e.isFile() && isDockerfile(e.name)) {
+        found.push(childRel);
+      }
+    }
+  }
+
+  await walk(root, "", 0);
+  return found.sort();
+}
+
+/** `Dockerfile`, `Dockerfile.prod`, `api.Dockerfile` — all three conventions. */
+function isDockerfile(name: string): boolean {
+  return /^Dockerfile(\..+)?$/i.test(name) || /\.Dockerfile$/i.test(name);
 }

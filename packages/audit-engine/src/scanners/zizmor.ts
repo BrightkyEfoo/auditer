@@ -3,6 +3,7 @@ import type { ScannerAdapter, ScanContext } from "../ports/adapter.js";
 import type { SandboxSpec, SandboxResult } from "../ports/sandbox.js";
 import { DEFAULT_HARDENING, CONTAINER_REPO_PATH } from "../ports/sandbox.js";
 import { normalizeSarif, type SarifLog } from "../normalize/sarif.js";
+import { extractSarif, hasSarifReport } from "../normalize/sarif-stdout.js";
 
 /**
  * Repo-hygiene pillar — zizmor, static analysis of GitHub Actions workflows.
@@ -85,7 +86,8 @@ export class ZizmorAdapter implements ScannerAdapter {
     // status here always means the tool failed rather than that it found
     // something. 1 is mapped alongside 0 anyway, so a future version that
     // reinstates the finding exit code cannot turn results into a failed scan.
-    if (result.exitCode === 0 || result.exitCode === 1) return "success";
+    if (result.exitCode === 0) return "success";
+    if (result.exitCode === 1) return hasSarifReport(result.stdout) ? "success" : "fail";
     // 3 is "no inputs collected". `appliesTo` should have prevented it, so
     // reaching it means the gate and the repository disagree — a real failure,
     // and one that must not be smoothed into an empty clean result.
@@ -106,9 +108,3 @@ export class ZizmorAdapter implements ScannerAdapter {
   }
 }
 
-function extractSarif(s: string): string | null {
-  const start = s.indexOf('{"');
-  const end = s.lastIndexOf("}");
-  if (start === -1 || end === -1 || end < start) return null;
-  return s.slice(start, end + 1);
-}

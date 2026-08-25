@@ -3,6 +3,7 @@ import type { ScannerAdapter, ScanContext } from "../ports/adapter.js";
 import type { SandboxSpec, SandboxResult } from "../ports/sandbox.js";
 import { DEFAULT_HARDENING, CONTAINER_REPO_PATH, CONTAINER_SCRATCH_PATH } from "../ports/sandbox.js";
 import { normalizeSarif, type SarifLog } from "../normalize/sarif.js";
+import { extractSarif, hasSarifReport } from "../normalize/sarif-stdout.js";
 
 /**
  * Repo-hygiene pillar — Trivy `config` for IaC misconfig (Terraform, K8s,
@@ -57,7 +58,17 @@ export class TrivyConfigAdapter implements ScannerAdapter {
         CONTAINER_REPO_PATH,
       ],
       workdir: CONTAINER_REPO_PATH,
-      env: { TRIVY_CACHE_DIR: CONTAINER_SCRATCH_PATH },
+      // TRIVY_CACHE_DIR alone was not enough, and the gap was silent. trivy
+      // creates a temporary analysis directory under $TMPDIR, which defaults to
+      // /tmp — read-only here:
+      //
+      //   FATAL  unable to create temporary directory:
+      //          mkdir /tmp/analyzer-fs-430145459: read-only file system
+      //
+      // exit 1, no SARIF, and classifyExit mapped 1 to success. The IaC half of
+      // the hygiene pillar had never produced a finding. With TMPDIR on the
+      // scratch tmpfs the same command returns 16 KB of SARIF.
+      env: { TRIVY_CACHE_DIR: CONTAINER_SCRATCH_PATH, TMPDIR: CONTAINER_SCRATCH_PATH },
       mounts: [{ source: "", target: CONTAINER_REPO_PATH, readOnly: true }],
       network: { mode: "none" },
       isolationTier: this.isolationTier,
@@ -68,7 +79,10 @@ export class TrivyConfigAdapter implements ScannerAdapter {
 
   classifyExit(result: SandboxResult): ExitClass {
     if (result.timedOut) return "partial";
-    if (result.exitCode === 0 || result.exitCode === 1) return "success";
+    // 1 is both "misconfigurations found" and "fatal error"; only the report
+    // separates them (normalize/sarif-stdout.ts).
+    if (result.exitCode === 0) return "success";
+    if (result.exitCode === 1) return hasSarifReport(result.stdout) ? "success" : "fail";
     return "fail";
   }
 
@@ -86,9 +100,3 @@ export class TrivyConfigAdapter implements ScannerAdapter {
   }
 }
 
-function extractSarif(s: string): string | null {
-  const start = s.indexOf('{"');
-  const end = s.lastIndexOf("}");
-  if (start === -1 || end === -1 || end < start) return null;
-  return s.slice(start, end + 1);
-}

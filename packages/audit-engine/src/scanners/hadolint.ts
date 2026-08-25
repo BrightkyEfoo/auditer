@@ -3,13 +3,17 @@ import type { ScannerAdapter, ScanContext } from "../ports/adapter.js";
 import type { SandboxSpec, SandboxResult } from "../ports/sandbox.js";
 import { DEFAULT_HARDENING, CONTAINER_REPO_PATH } from "../ports/sandbox.js";
 import { normalizeSarif, type SarifLog } from "../normalize/sarif.js";
+import { extractSarif, hasSarifReport } from "../normalize/sarif-stdout.js";
 
 /**
  * Repo-hygiene pillar — hadolint Dockerfile linting (best-practice + shellcheck).
- * Only runs when a Dockerfile is present (relevance gate). Emits SARIF.
- * hadolint is GPL — run as an unmodified separate container (which the sandbox
- * model already guarantees; we never link it).
+ * Emits SARIF. hadolint is GPL — run as an unmodified separate container (which
+ * the sandbox model already guarantees; we never link it).
  */
+
+/** hadolint accepts many files in one run and merges them into a single SARIF. */
+const MAX_DOCKERFILES = 50;
+
 export class HadolintAdapter implements ScannerAdapter {
   readonly id = "hadolint";
   readonly pillar = "hygiene" as const;
@@ -24,15 +28,29 @@ export class HadolintAdapter implements ScannerAdapter {
     "hadolint/hadolint@sha256:30a8fd2e785ab6176eed53f74769e04f125afb2f74a6c52aef7d463583b6d45e";
 
   appliesTo(ctx: ScanContext): boolean {
-    return (ctx.manifests ?? []).includes("Dockerfile");
+    return (ctx.dockerfiles ?? []).length > 0;
   }
 
-  buildSpec(_ctx: ScanContext): SandboxSpec {
+  buildSpec(ctx: ScanContext): SandboxSpec {
+    // The paths come from the worker's own walk of the checkout. This adapter
+    // used to hardcode `<repo>/Dockerfile`, and on any repository that keeps its
+    // Dockerfiles elsewhere — this one keeps them under infra/docker — hadolint
+    // exited 1 with:
+    //
+    //   /repo/Dockerfile: withBinaryFile: does not exist
+    //
+    // 1 is also hadolint's code for "lint issues found", so classifyExit
+    // recorded a SUCCESSFUL scan with zero findings. The Dockerfile half of the
+    // hygiene pillar reported clean on files it had never opened.
+    //
+    // Paths, not a glob: hadolint has no recursive mode and its image is
+    // distroless, so there is no shell in there to expand one.
+    const files = (ctx.dockerfiles ?? [])
+      .slice(0, MAX_DOCKERFILES)
+      .map((rel) => `${CONTAINER_REPO_PATH}/${rel}`);
     return {
       image: this.image,
-      // hadolint has no recursive mode; scan the root Dockerfile. (Multi-Dockerfile
-      // discovery is a v2 refinement — the worker can enumerate and pass paths.)
-      cmd: ["hadolint", "--format", "sarif", `${CONTAINER_REPO_PATH}/Dockerfile`],
+      cmd: ["hadolint", "--format", "sarif", ...files],
       workdir: CONTAINER_REPO_PATH,
       mounts: [{ source: "", target: CONTAINER_REPO_PATH, readOnly: true }],
       network: { mode: "none" },
@@ -44,8 +62,10 @@ export class HadolintAdapter implements ScannerAdapter {
 
   classifyExit(result: SandboxResult): ExitClass {
     if (result.timedOut) return "partial";
-    // hadolint: 0 = clean, 1 = lint issues (success), other = error.
-    if (result.exitCode === 0 || result.exitCode === 1) return "success";
+    // 0 = clean. 1 = lint issues found, AND 1 = a file could not be read; only
+    // the report tells the two apart (normalize/sarif-stdout.ts).
+    if (result.exitCode === 0) return "success";
+    if (result.exitCode === 1) return hasSarifReport(result.stdout) ? "success" : "fail";
     return "fail";
   }
 
@@ -61,11 +81,4 @@ export class HadolintAdapter implements ScannerAdapter {
       return [];
     }
   }
-}
-
-function extractSarif(s: string): string | null {
-  const start = s.indexOf('{"');
-  const end = s.lastIndexOf("}");
-  if (start === -1 || end === -1 || end < start) return null;
-  return s.slice(start, end + 1);
 }

@@ -1,8 +1,9 @@
 import type { ExitClass, RawFinding } from "@auditer/types";
 import type { ScannerAdapter, ScanContext } from "../ports/adapter.js";
 import type { SandboxSpec, SandboxResult } from "../ports/sandbox.js";
-import { DEFAULT_HARDENING, CONTAINER_REPO_PATH } from "../ports/sandbox.js";
+import { DEFAULT_HARDENING, CONTAINER_REPO_PATH, CONTAINER_SCRATCH_PATH } from "../ports/sandbox.js";
 import { normalizeSarif, type SarifLog } from "../normalize/sarif.js";
+import { extractSarif, hasSarifReport } from "../normalize/sarif-stdout.js";
 
 /**
  * SAST pillar — Semgrep OSS against a VENDORED ruleset baked into our own image
@@ -62,6 +63,18 @@ export class SemgrepAdapter implements ScannerAdapter {
         CONTAINER_REPO_PATH,
       ],
       workdir: CONTAINER_REPO_PATH,
+      // semgrep writes a settings file under $HOME and unpacks work into
+      // $TMPDIR. With neither set, HOME resolves to `/` and the first write
+      // dies on the read-only rootfs:
+      //
+      //   OSError: [Errno 30] Read-only file system: '/.semgrep'
+      //
+      // exit 1 — the same code semgrep uses for "findings were found", which
+      // classifyExit mapped to success. The SAST pillar therefore reported
+      // CLEAN on a scanner that crashed before reading a single file, on every
+      // run since the pillar existed. With both pointed at the scratch tmpfs
+      // the same command returns 1.09 MB of SARIF over 276 rules.
+      env: { HOME: CONTAINER_SCRATCH_PATH, TMPDIR: CONTAINER_SCRATCH_PATH },
       mounts: [{ source: "", target: CONTAINER_REPO_PATH, readOnly: true }],
       network: { mode: "none" },
       isolationTier: this.isolationTier,
@@ -72,8 +85,11 @@ export class SemgrepAdapter implements ScannerAdapter {
 
   classifyExit(result: SandboxResult): ExitClass {
     if (result.timedOut) return "partial";
-    // semgrep: 0 = clean, 1 = findings (both success), >1 = error.
-    if (result.exitCode === 0 || result.exitCode === 1) return "success";
+    // semgrep: 0 = clean. 1 means BOTH "findings were found" and "I crashed",
+    // so the exit code alone cannot tell them apart — the report can. See
+    // normalize/sarif-stdout.ts for what this guard is paying for.
+    if (result.exitCode === 0) return "success";
+    if (result.exitCode === 1) return hasSarifReport(result.stdout) ? "success" : "fail";
     return "fail";
   }
 
@@ -91,9 +107,3 @@ export class SemgrepAdapter implements ScannerAdapter {
 }
 
 /** Semgrep may print progress before the SARIF object; slice the JSON out. */
-function extractSarif(s: string): string | null {
-  const start = s.indexOf('{"');
-  const end = s.lastIndexOf("}");
-  if (start === -1 || end === -1 || end < start) return null;
-  return s.slice(start, end + 1);
-}

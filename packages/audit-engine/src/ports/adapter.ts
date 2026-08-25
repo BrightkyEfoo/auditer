@@ -17,6 +17,16 @@ export interface ScanContext {
   languages?: Record<string, number>;
   /** Present manifest/lockfile basenames, for relevance gating. */
   manifests?: string[];
+  /**
+   * Repo-relative paths of every Dockerfile found in the checkout.
+   *
+   * Separate from `manifests`, which holds BASENAMES only: hadolint has no
+   * recursive mode and its image is distroless, so there is no shell inside to
+   * expand a glob. The adapter needs real paths or it scans nothing — it used to
+   * assume `<repo>/Dockerfile` and fail on every repository that keeps its
+   * Dockerfiles anywhere else.
+   */
+  dockerfiles?: string[];
   /** For DAST/UX only: the verified target. */
   target?: { url: string; scopeAllowlist?: string[] };
 }

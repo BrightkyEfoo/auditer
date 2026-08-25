@@ -146,7 +146,9 @@ async function processAudit(job: AuditJob): Promise<void> {
       ws = await prepare({ cloneUrl, ref: job.ref ?? ref, token, tokenUser, fullHistory: secretsRequested });
       await publisher.log(
         auditRunId,
-        `cloned ${cloneUrl} @ ${ws.commitSha?.slice(0, 12) ?? "no-commit"} (${ws.manifests.length} manifests)`,
+        `cloned ${cloneUrl} @ ${ws.commitSha?.slice(0, 12) ?? "no-commit"} — ` +
+          `${ws.manifests.length} manifeste(s)${ws.manifests.length ? ` : ${ws.manifests.join(", ")}` : ""}` +
+          `, ${ws.dockerfiles.length} Dockerfile(s)`,
       );
       // Stamp the commit that was ACTUALLY analysed. Every report asserts "the
       // result holds for the commit shown above"; until now nothing wrote it,
@@ -159,7 +161,13 @@ async function processAudit(job: AuditJob): Promise<void> {
           }),
         );
       }
-      ctx = { auditRunId, organizationId, workspacePath: ws.path, manifests: ws.manifests };
+      ctx = {
+        auditRunId,
+        organizationId,
+        workspacePath: ws.path,
+        manifests: ws.manifests,
+        dockerfiles: ws.dockerfiles,
+      };
     } else if (job.targetId) {
       // ── DAST / UX audit: verified target, no clone. Ownership is re-checked
       //    here (defense in depth) even though the api already gated it. ──
