@@ -29,8 +29,75 @@ export class TargetsService {
     const apex = apexDomain(host);
     const token = `auditer-verification=${randomBytes(16).toString("hex")}`;
 
-    return this.prisma.tenant(auth.organizationId, (tx) =>
-      tx.target.create({
+    return this.prisma.tenant(auth.organizationId, async (tx) => {
+      const existing = await tx.target.findMany({
+        where: { organizationId: auth.organizationId },
+      });
+
+      // 1. Même hôte, même nature : rendre la cible existante.
+      //
+      // Sans ça, resaisir la même URL fabriquait une SECONDE cible, en attente,
+      // avec un jeton neuf — et l'utilisateur repartait prouver ce qu'il avait
+      // déjà prouvé. Sa cible vérifiée était toujours là, juste au-dessus dans
+      // la liste. Ce n'est pas la preuve qui expirait, c'est qu'on lui
+      // demandait de la refaire pour un objet neuf.
+      const sameHost = existing.find(
+        (t) => t.kind === input.kind && extractHost(t.value) === host,
+      );
+      if (sameHost) return sameHost;
+
+      // 2. Propriété de l'apex déjà prouvée : en hériter.
+      //
+      // La vérification n'a jamais lieu sur l'hôte visé, elle a lieu sur l'apex
+      // (voir `verify`). Deux cibles sous le même apex interrogent donc le même
+      // enregistrement et établissent le même fait. Redemander un TXT n'apporte
+      // aucune garantie supplémentaire — c'est la même preuve resservie.
+      //
+      // Ce qui protège réellement d'un sous-domaine délégué à un tiers, ce
+      // n'est pas ce second TXT : c'est l'épinglage des IP, fait ci-dessous sur
+      // l'hôte réel de CETTE cible, comme le fait `verify`.
+      const provenApex = existing.find(
+        (t) => t.apexDomain === apex && t.verificationStatus === "verified",
+      );
+      if (provenApex) {
+        const ips = await safeResolve4(host);
+        const inherited = await tx.target.create({
+          data: {
+            organizationId: auth.organizationId,
+            repositoryId: input.repositoryId,
+            kind: input.kind,
+            value: input.value,
+            apexDomain: apex,
+            verificationMethod: "dns-txt",
+            verificationStatus: "verified",
+            // Aucun jeton : il n'y a rien à publier, la preuve est déjà faite.
+            verificationToken: null,
+            resolvedIps: ips,
+            createdById: auth.userId,
+          },
+        });
+        // L'attestation est consignée pour CETTE cible aussi. Un scan réseau
+        // vise un tiers potentiel : chaque hôte scanné doit avoir sa trace
+        // d'autorisation, même quand la preuve vient d'une cible sœur.
+        await tx.abuseEvent.create({
+          data: {
+            organizationId: auth.organizationId,
+            actor: auth.userId,
+            eventType: "dast_authorization_affirmed",
+            target: input.value,
+            detail: {
+              method: "dns-txt",
+              inheritedFrom: provenApex.id,
+              apexDomain: apex,
+              ips,
+            } as never,
+          },
+        });
+        return inherited;
+      }
+
+      // 3. Premier hôte sous cet apex : la preuve reste à faire.
+      return tx.target.create({
         data: {
           organizationId: auth.organizationId,
           repositoryId: input.repositoryId,
@@ -42,8 +109,8 @@ export class TargetsService {
           verificationToken: token,
           createdById: auth.userId,
         },
-      }),
-    );
+      });
+    });
   }
 
   async list(auth: AuthContext) {

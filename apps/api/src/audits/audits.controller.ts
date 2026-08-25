@@ -6,9 +6,12 @@ import {
   Body,
   Param,
   Query,
+  Res,
   HttpCode,
   UseGuards,
 } from "@nestjs/common";
+import type { Response } from "express";
+import { getStorage } from "@auditer/storage";
 import { z } from "zod";
 import { Pillar, Severity, TriageStatus } from "@auditer/types";
 import { AuthGuard, Auth, type AuthContext } from "../auth/auth.guard.js";
@@ -49,6 +52,37 @@ export class AuditsController {
   @Get(":id")
   get(@Auth() auth: AuthContext, @Param("id") id: string) {
     return this.audits.get(auth, id);
+  }
+
+  /** La trace persistée du relevé : une ligne par moteur prévu. */
+  @Get(":id/scans")
+  scans(@Auth() auth: AuthContext, @Param("id") id: string) {
+    return this.audits.scans(auth, id);
+  }
+
+  /**
+   * Sortie brute d'un moteur, en pièce jointe.
+   *
+   * `attachment` et `text/plain` sont délibérés : c'est la sortie non filtrée
+   * d'un outil tiers, elle ne doit jamais être rendue dans notre propre origine.
+   */
+  @Get(":id/scans/:scanId/log")
+  async scanLog(
+    @Auth() auth: AuthContext,
+    @Param("id") id: string,
+    @Param("scanId") scanId: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    const artifact = await this.audits.scanLog(auth, id, scanId);
+    const body = await getStorage().get(artifact.storageKey);
+    res.setHeader("content-type", "text/plain; charset=utf-8");
+    res.setHeader("content-length", String(body.byteLength));
+    res.setHeader(
+      "content-disposition",
+      `attachment; filename="auditer-moteur-${scanId.slice(0, 8)}.txt"`,
+    );
+    res.setHeader("cache-control", "private, no-store");
+    res.send(body);
   }
 
   @Get(":id/findings")

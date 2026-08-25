@@ -67,6 +67,8 @@ export interface PurgeReport {
   expiredArtifacts: number;
   /** Scan rows whose error payload (the scanner's messages) was blanked. */
   scanErrorsScrubbed: number;
+  /** Événements de relevé (transitions de phase, notes) passés 90 jours. */
+  runEvents: number;
   /** DAST authorization attestations past 24 months. */
   attestations: number;
   /** Session rows past their own expiry — the 30 days announced in the cookie policy. */
@@ -83,6 +85,7 @@ interface OrgCounts {
   scannerLogArtifacts: number;
   expiredArtifacts: number;
   scanErrorsScrubbed: number;
+  runEvents: number;
   attestations: number;
   storageObjects: number;
 }
@@ -95,6 +98,7 @@ function emptyReport(dryRun: boolean): PurgeReport {
     scannerLogArtifacts: 0,
     expiredArtifacts: 0,
     scanErrorsScrubbed: 0,
+    runEvents: 0,
     attestations: 0,
     expiredSessions: 0,
     storageObjects: 0,
@@ -108,6 +112,7 @@ function emptyCounts(): OrgCounts {
     scannerLogArtifacts: 0,
     expiredArtifacts: 0,
     scanErrorsScrubbed: 0,
+    runEvents: 0,
     attestations: 0,
     storageObjects: 0,
   };
@@ -263,13 +268,25 @@ async function purgeOrganization(args: {
       where: { organizationId, createdAt: { lt: attestationCutoff } },
     });
 
-    return { runIds, runArtifacts, logArtifacts, expiredArtifacts, attestations };
+    // Les événements des relevés qu'on GARDE : ce sont des journaux
+    // d'exécution, donc l'horloge de 90 jours, plus courte que les 24 mois du
+    // relevé. Ceux des relevés supprimés partent en cascade.
+    const runEvents = await tx.runEvent.count({
+      where: {
+        organizationId,
+        createdAt: { lt: logCutoff },
+        ...(runIds.length > 0 ? { NOT: { auditRunId: { in: runIds } } } : {}),
+      },
+    });
+
+    return { runIds, runArtifacts, logArtifacts, expiredArtifacts, attestations, runEvents };
   });
 
   counts.runs = plan.runIds.length;
   counts.scannerLogArtifacts = plan.logArtifacts.length;
   counts.expiredArtifacts = plan.expiredArtifacts.length;
   counts.attestations = plan.attestations;
+  counts.runEvents = plan.runEvents;
 
   if (dryRun) {
     // Count what a real run would scrub, without touching it.
@@ -331,6 +348,18 @@ async function purgeOrganization(args: {
       data: { error: Prisma.DbNull },
     });
     counts.scanErrorsScrubbed = scrubbed.count;
+
+    // Les événements de relevé suivent la même horloge que les autres journaux
+    // d'exécution. Sans cette ligne, une table qui grossit à chaque relevé ne
+    // serait jamais purgée, et le texte publié — « journaux d'exécution : 90
+    // jours » — cesserait d'être vrai le jour où cette table a existé.
+    await tx.runEvent.deleteMany({
+      where: {
+        organizationId,
+        createdAt: { lt: logCutoff },
+        ...(plan.runIds.length > 0 ? { NOT: { auditRunId: { in: plan.runIds } } } : {}),
+      },
+    });
 
     // DAST authorization attestations, on their own 24-month clock. They
     // survive an account deletion on purpose (see AccountService) — this is

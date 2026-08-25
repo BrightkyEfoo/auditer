@@ -103,6 +103,36 @@ export interface Finding {
   aiNeedsHuman: boolean;
 }
 
+/**
+ * Une exécution de moteur, telle que la base la conserve.
+ *
+ * C'est la trace DURABLE d'un relevé : elle survit à une actualisation, à une
+ * coupure réseau et à la fermeture de l'onglet, contrairement aux événements du
+ * flux qui ne vivent que le temps de la connexion.
+ *
+ * `status: "pending"` est un moteur inscrit au plan et pas encore démarré —
+ * c'est ce qui rend l'avancement calculable, et vrai.
+ */
+export interface Scan {
+  id: string;
+  scannerId: string;
+  pillar: string;
+  tool: string;
+  toolVersion: string | null;
+  imageDigest: string | null;
+  status: "pending" | "running" | "success" | "partial" | "failed" | "skipped";
+  exitCode: number | null;
+  exitClass: string | null;
+  /** Ce que le moteur a dit en échouant. Caviardé par la purge à 90 jours. */
+  error: unknown;
+  stats: unknown;
+  /** Sortie brute conservée, quand il y en a une. */
+  rawArtifactId: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  createdAt: string;
+}
+
 export interface Connection {
   id: string;
   provider: string;
@@ -167,6 +197,17 @@ export const api = {
       body: JSON.stringify(body),
     }),
   getAudit: (id: string) => req<AuditRun>(`/audits/${id}`),
+  /** La trace persistée du relevé — une ligne par moteur prévu. */
+  listScans: (id: string) => req<Scan[]>(`/audits/${id}/scans`),
+  /**
+   * Demande l'arrêt d'un relevé en cours.
+   *
+   * Lève un drapeau que le worker consulte ENTRE deux moteurs : un scanner déjà
+   * lancé va au bout. L'interface doit le dire — un bouton qui promet un arrêt
+   * immédiat mentirait sur ce que fait le système.
+   */
+  cancelAudit: (id: string) =>
+    req<{ ok: boolean }>(`/audits/${id}/cancel`, { method: "POST" }),
   listFindings: (id: string) => req<Finding[]>(`/audits/${id}/findings`),
   setTriage: (fingerprint: string, status: string) =>
     req<{ ok: boolean }>("/triage", {

@@ -160,6 +160,100 @@ export class AuditsService {
     return run;
   }
 
+  /**
+   * Les scans d'un relevé — une ligne par moteur, du plan à son issue.
+   *
+   * C'est la source DURABLE de la trace. Jusqu'ici elle n'existait que dans
+   * l'état React de la page, alimentée par le direct : actualiser, ou perdre la
+   * connexion, effaçait tout ce qui avait été dit. Les lignes étaient pourtant
+   * déjà en base — personne ne les lisait.
+   *
+   * `error` et `stats` en font partie à dessein : le code de sortie dit qu'un
+   * moteur a échoué, le payload dit POURQUOI. C'est la donnée de l'organisation
+   * qui a lancé le relevé, et la purge la caviarde à 90 jours.
+   */
+  async scans(auth: AuthContext, id: string) {
+    await this.get(auth, id); // autorise + 404 hors tenant (RLS double la garde)
+    return this.prisma.tenant(auth.organizationId, (tx) =>
+      tx.scan.findMany({
+        where: { auditRunId: id, organizationId: auth.organizationId },
+        // `createdAt` départage les moteurs pas encore démarrés, qui n'ont pas
+        // de `startedAt` : sans lui, l'ordre du plan serait arbitraire.
+        orderBy: [{ startedAt: "asc" }, { createdAt: "asc" }],
+        select: {
+          id: true,
+          scannerId: true,
+          pillar: true,
+          tool: true,
+          toolVersion: true,
+          imageDigest: true,
+          status: true,
+          exitCode: true,
+          exitClass: true,
+          error: true,
+          stats: true,
+          rawArtifactId: true,
+          startedAt: true,
+          finishedAt: true,
+          createdAt: true,
+        },
+      }),
+    );
+  }
+
+  /**
+   * Les événements persistés d'un relevé, après un `seq` donné.
+   *
+   * C'est la reprise du flux. Le canal Valkey ne rejoue rien : sans cette
+   * lecture, une actualisation de page ou une coupure d'une seconde ouvrait un
+   * trou définitif dans la trace — alors même que ce service annonçait honorer
+   * `Last-Event-ID`.
+   *
+   * `seq` est monotone par relevé, donc « après N » est exact et non
+   * approximatif : aucun événement n'est redonné, aucun n'est sauté.
+   */
+  async runEvents(auth: AuthContext, id: string, afterSeq: number) {
+    return this.prisma.tenant(auth.organizationId, (tx) =>
+      tx.runEvent.findMany({
+        where: {
+          auditRunId: id,
+          organizationId: auth.organizationId,
+          ...(afterSeq > 0 ? { seq: { gt: afterSeq } } : {}),
+        },
+        orderBy: { seq: "asc" },
+        select: { seq: true, type: true, payload: true },
+      }),
+    );
+  }
+
+  /**
+   * La sortie brute conservée d'un moteur : l'artefact `raw` de ce scan.
+   *
+   * Servie à travers l'api plutôt que par une URL présignée, pour la même
+   * raison que les rapports : le point d'accès au stockage est un nom d'hôte
+   * interne, que le navigateur ne saurait pas résoudre, et l'autorisation est
+   * réévaluée ici à chaque requête au lieu d'être déléguée à une URL qui a
+   * quitté le service.
+   */
+  async scanLog(auth: AuthContext, runId: string, scanId: string) {
+    await this.get(auth, runId); // autorise le relevé
+    const artifact = await this.prisma.tenant(auth.organizationId, (tx) =>
+      tx.artifact.findFirst({
+        where: {
+          scanId,
+          auditRunId: runId,
+          organizationId: auth.organizationId,
+          type: "raw",
+        },
+        orderBy: { createdAt: "desc" },
+      }),
+    );
+    // 404 et non 204 : « ce moteur n'a rien écrit » et « ce journal a été purgé
+    // à 90 jours » sont indiscernables ici, et aucun des deux n'est un contenu.
+    if (!artifact) throw new NotFoundException("scan log not found");
+    return artifact;
+  }
+
   async listFindings(
     auth: AuthContext,
     id: string,

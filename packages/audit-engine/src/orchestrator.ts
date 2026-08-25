@@ -37,6 +37,19 @@ export interface RunScanResult {
   /** Measurements, when the adapter produces any (see ScannerAdapter.measure). */
   metrics?: ScanMetrics;
   skipped: boolean;
+  /**
+   * Sortie brute du moteur, telle que le bac à sable l'a rendue.
+   *
+   * Elle était jetée ici : `runScan` la lisait pour en extraire des findings,
+   * puis la laissait partir avec la variable locale. Un moteur qui échouait ne
+   * laissait donc que son code de sortie — et un code de sortie ne dit pas
+   * QUELLE règle a explosé ni sur quel fichier. Le seul lecteur qui pouvait
+   * répondre était celui qui relançait le conteneur à la main.
+   *
+   * Le worker décide quoi en conserver et sous quelle rétention ; l'engine se
+   * contente de ne plus la perdre. Absente quand le scanner n'a pas tourné.
+   */
+  raw?: { stdout: string; stderr: string };
 }
 
 /** Execute a single scanner against a prepared workspace. */
@@ -91,6 +104,7 @@ export async function runScan(
     findings,
     metrics,
     skipped: false,
+    raw: { stdout: result.stdout, stderr: result.stderr },
   };
 }
 

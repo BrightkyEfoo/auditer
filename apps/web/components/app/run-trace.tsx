@@ -31,9 +31,16 @@ export interface TraceEntry {
   image?: string;
   reason?: string;
   message?: string;
+  /** Renseigné UNIQUEMENT quand une sortie brute est conservée pour ce moteur :
+   *  sa présence est ce qui décide d'afficher le lien de téléchargement. */
+  scanId?: string;
 }
 
 const STATUS_FR: Record<string, string> = {
+  // `pending` est un moteur INSCRIT AU PLAN et pas encore démarré. Il n'existait
+  // pas dans la trace tant qu'un moteur ne naissait qu'en s'exécutant : on ne
+  // pouvait pas savoir ce qui restait à venir, seulement ce qui était passé.
+  pending: "en attente",
   running: "en cours",
   success: "réussi",
   partial: "partiel",
@@ -43,6 +50,8 @@ const STATUS_FR: Record<string, string> = {
 
 function tone(status?: string): string {
   switch (status) {
+    case "pending":
+      return "text-line-bright";
     case "success":
       return "text-acid";
     case "failed":
@@ -88,7 +97,10 @@ function shortImage(ref?: string): string | null {
   return digest ? `${base}@${digest.slice(0, 10)}` : base;
 }
 
-export function RunTrace({ entries }: { entries: TraceEntry[] }) {
+/** Moteurs dont l'issue est connue — le compteur de l'en-tête compte ceux-là. */
+const SCAN_DONE = new Set(["success", "partial", "failed", "skipped"]);
+
+export function RunTrace({ entries, runId }: { entries: TraceEntry[]; runId: string }) {
   if (entries.length === 0) return null;
 
   return (
@@ -96,7 +108,9 @@ export function RunTrace({ entries }: { entries: TraceEntry[] }) {
       <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
         <Label className="text-acid">Trace d&apos;exécution</Label>
         <span className="font-mono text-label uppercase text-mute">
-          {entries.filter((e) => e.kind === "scan").length} événement(s) moteur
+          {entries.filter((e) => e.kind === "scan" && SCAN_DONE.has(e.status ?? "")).length}
+          {" / "}
+          {entries.filter((e) => e.kind === "scan").length} moteur(s)
         </span>
       </div>
 
@@ -128,6 +142,20 @@ export function RunTrace({ entries }: { entries: TraceEntry[] }) {
                 </span>
                 <span className="col-span-6 truncate font-mono text-label text-mute sm:col-span-3">
                   {shortImage(e.image)}
+                  {e.scanId && (
+                    <>
+                      {" · "}
+                      {/* Un lien, pas un bouton : la réponse est une pièce
+                          jointe, le navigateur l'enregistre directement. */}
+                      <a
+                        href={`/api/audits/${runId}/scans/${e.scanId}/log`}
+                        download
+                        className="ul-draw text-acid"
+                      >
+                        journal
+                      </a>
+                    </>
+                  )}
                 </span>
                 {/* The reason is the whole point: an engine that stopped must
                     say why, or its silence reads as a clean pillar. */}

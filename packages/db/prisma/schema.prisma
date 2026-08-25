@@ -349,6 +349,7 @@ model AuditRun {
   repository    Repository?    @relation(fields: [repositoryId], references: [id], onDelete: SetNull)
   target        Target?        @relation(fields: [targetId], references: [id], onDelete: SetNull)
   scans         Scan[]
+  runEvents     RunEvent[]
   findings      Finding[]
   pillarResults PillarResult[]
   reports       Report[]
@@ -357,6 +358,42 @@ model AuditRun {
   @@index([organizationId, status])
   @@index([repositoryId])
   @@map("audit_runs")
+}
+
+/// Journal DURABLE des événements d'un relevé.
+///
+/// Le canal Valkey qui porte la progression est un canal de publication : il ne
+/// rejoue rien. Les transitions de phase et les notes d'exécution ne vivaient
+/// donc que le temps d'une connexion — actualiser la page, ou perdre le réseau
+/// une seconde, les effaçait définitivement. Les lignes `Scan` sauvent l'état
+/// des moteurs, pas le récit qui les entoure.
+///
+/// `seq` est le compteur monotone par relevé déjà utilisé comme identifiant SSE :
+/// c'est lui qui rend la reprise sur `Last-Event-ID` exacte plutôt
+/// qu'approximative, et l'unicité (auditRunId, seq) rend l'écriture idempotente
+/// si un job est relancé.
+///
+/// Ce sont des journaux d'exécution : la purge les efface à 90 jours, comme la
+/// sortie brute des moteurs, et non à 24 mois comme le relevé lui-même.
+model RunEvent {
+  id             String   @id @default(cuid())
+  organizationId String
+  auditRunId     String
+  seq            Int
+  /// `status` | `scan` | `log` | `done` — le type d'événement du flux.
+  type           String
+  /// L'événement complet tel qu'il a été publié, sans reformatage.
+  payload        Json
+  /// Horodatage porté par l'événement, distinct de son heure d'écriture.
+  at             DateTime
+  createdAt      DateTime @default(now())
+
+  auditRun AuditRun @relation(fields: [auditRunId], references: [id], onDelete: Cascade)
+
+  @@unique([auditRunId, seq])
+  @@index([organizationId])
+  @@index([auditRunId, seq])
+  @@map("run_events")
 }
 
 model Scan {

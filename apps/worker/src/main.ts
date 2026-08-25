@@ -41,7 +41,7 @@ import { readOsvCoverage } from "./osv-coverage.js";
 
 const prisma = createPrisma();
 const redis = createRedis();
-const publisher = new EventPublisher(redis);
+const publisher = new EventPublisher(redis, prisma);
 const registry = defaultRegistry();
 const runner = new DockerGvisorRunner();
 const kek = kekFromEnv();
@@ -124,6 +124,9 @@ async function resolveVerifiedTarget(
 
 async function processAudit(job: AuditJob): Promise<void> {
   const { auditRunId, organizationId } = job;
+  // Lier le relevé à son organisation AVANT la première publication : c'est ce
+  // qui permet au publieur d'écrire dans `run_events` sous le bon tenant.
+  publisher.bind(auditRunId, organizationId);
 
   // Report-only re-render path (from POST /reports/:id/export).
   if (job.scopeConfig?.reportOnly) {
@@ -199,6 +202,17 @@ async function processAudit(job: AuditJob): Promise<void> {
     }
 
     const adapters = registry.forPillars(job.pillars);
+
+    // Inscrire le PLAN en base avant d'exécuter quoi que ce soit : une ligne
+    // `Scan` en `pending` par moteur prévu.
+    //
+    // Sans cela, un moteur n'existait qu'une fois terminé, et personne ne
+    // pouvait dire combien il en restait — ni le calcul d'avancement, ni un
+    // lecteur qui rouvre la page. Le modèle était déjà fait pour ça :
+    // `status pending` par défaut et `@@unique([auditRunId, scannerId])`
+    // rendent l'écriture idempotente à la reprise d'un job.
+    await planScans(organizationId, auditRunId, adapters);
+
     const allRaw: RawFinding[] = [];
     const fpToScanId = new Map<string, string>();
     const pillarsRun = new Set<Pillar>();
@@ -212,6 +226,7 @@ async function processAudit(job: AuditJob): Promise<void> {
         return;
       }
       const startedAt = Date.now();
+      await markScanRunning(organizationId, auditRunId, adapter.id);
       await publisher.scan(auditRunId, adapter.pillar, adapter.tool, "running", undefined, {
         // The exact image, digest included. Two runs of the same commit are
         // only comparable if you can see they ran the same binary.
@@ -253,6 +268,10 @@ async function processAudit(job: AuditJob): Promise<void> {
           stats: result.metrics,
         },
       );
+      // La sortie brute part au stockage et s'accroche au scan. Best-effort :
+      // perdre un journal ne doit jamais coûter le relevé.
+      await attachRawOutput(organizationId, auditRunId, scanId, adapter.id, result.raw);
+
       // A pillar counts as MEASURED only if an engine actually produced a
       // result. This is the defect that let a run report 100/100 with six of
       // seven engines dead: `pillarsRun.add` fired for every scanner that was
@@ -396,6 +415,10 @@ async function processAudit(job: AuditJob): Promise<void> {
   } finally {
     // Shred the workspace — source code never outlives the scan.
     await ws?.cleanup().catch(() => {});
+    // Le relevé est clos : oublier son organisation. Sans ça, la table du
+    // publieur grossirait à chaque relevé dans un worker qui tourne des
+    // semaines.
+    publisher.release(auditRunId);
   }
 }
 
@@ -437,6 +460,132 @@ async function finalize(
       },
     }),
   );
+}
+
+/** Ce dont `planScans` a besoin d'un adaptateur — rien de plus. */
+type PlannedScan = { id: string; pillar: Pillar; tool: string };
+
+/** Queue de sortie brute conservée par moteur. La fin d'un flux porte l'erreur ;
+ *  le début porte des bannières. On garde donc la FIN. */
+const RAW_OUTPUT_TAIL_BYTES = 256 * 1024;
+
+/** 90 jours — la durée publiée pour les journaux d'exécution
+ *  (apps/web/lib/legal.ts, RETENTION.scannerLogsMs). */
+const SCANNER_LOG_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+
+/**
+ * Inscrire le plan d'exécution en base : une ligne par moteur prévu, en
+ * `pending`, avant que le premier ne démarre.
+ *
+ * `update: {}` est délibéré. BullMQ peut relancer un job déjà partiellement
+ * exécuté ; sans ce vide, la reprise remettrait à `pending` des moteurs déjà
+ * terminés et l'avancement reculerait sous les yeux du lecteur.
+ */
+async function planScans(
+  organizationId: string,
+  auditRunId: string,
+  adapters: readonly PlannedScan[],
+): Promise<void> {
+  await withTenant(prisma, organizationId, async (tx) => {
+    for (const a of adapters) {
+      await tx.scan.upsert({
+        where: { auditRunId_scannerId: { auditRunId, scannerId: a.id } },
+        create: {
+          organizationId,
+          auditRunId,
+          scannerId: a.id,
+          pillar: a.pillar,
+          tool: a.tool,
+          status: "pending",
+        },
+        update: {},
+      });
+    }
+  });
+}
+
+/** Passer un moteur en `running` et horodater son démarrage. Sans `startedAt`,
+ *  une exécution en cours n'a pas de durée : impossible de distinguer un
+ *  scanner qui travaille d'un scanner bloqué. */
+async function markScanRunning(
+  organizationId: string,
+  auditRunId: string,
+  scannerId: string,
+): Promise<void> {
+  await withTenant(prisma, organizationId, (tx) =>
+    tx.scan.update({
+      where: { auditRunId_scannerId: { auditRunId, scannerId } },
+      data: { status: "running", startedAt: new Date() },
+    }),
+  );
+}
+
+/**
+ * Conserver la sortie brute d'un moteur comme artefact, et l'accrocher au scan.
+ *
+ * La colonne `Scan.rawArtifactId` existait depuis toujours et RIEN ne l'écrivait,
+ * alors que la politique de confidentialité annonce la conservation de « la
+ * sortie brute des moteurs » pendant 90 jours et que la purge sait déjà effacer
+ * les artefacts de type `raw` à cette échéance. La promesse était écrite, la
+ * donnée n'existait pas.
+ *
+ * Best-effort de bout en bout : une écriture de journal qui échoue ne doit
+ * jamais coûter le relevé qu'elle documente. On tronque à la fin plutôt qu'au
+ * début, et on n'écrit rien quand le moteur n'a rien dit.
+ */
+async function attachRawOutput(
+  organizationId: string,
+  auditRunId: string,
+  scanId: string,
+  scannerId: string,
+  raw: { stdout: string; stderr: string } | undefined,
+): Promise<void> {
+  if (!raw) return;
+  const body = [
+    raw.stdout.trim() ? `─── stdout ───\n${raw.stdout}` : "",
+    raw.stderr.trim() ? `─── stderr ───\n${raw.stderr}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  if (!body.trim()) return;
+
+  const kept =
+    Buffer.byteLength(body, "utf8") > RAW_OUTPUT_TAIL_BYTES
+      ? `[…début tronqué…]\n${body.slice(-RAW_OUTPUT_TAIL_BYTES)}`
+      : body;
+
+  try {
+    const storage = getStorage();
+    const key = storage
+      .buildKey({ organizationId, auditRunId, type: "raw", ext: "txt" })
+      .replace(/\.txt$/, `.${scannerId}.txt`);
+    const put = await storage.put(key, kept, "text/plain; charset=utf-8");
+    await withTenant(prisma, organizationId, async (tx) => {
+      const artifact = await tx.artifact.create({
+        data: {
+          organizationId,
+          auditRunId,
+          scanId,
+          type: "raw",
+          storageKey: put.key,
+          contentType: "text/plain; charset=utf-8",
+          sizeBytes: put.sizeBytes,
+          checksum: put.checksum,
+          retentionExpiresAt: new Date(Date.now() + SCANNER_LOG_RETENTION_MS),
+        },
+      });
+      await tx.scan.update({ where: { id: scanId }, data: { rawArtifactId: artifact.id } });
+    });
+  } catch (err) {
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        run: auditRunId,
+        scannerId,
+        message: `sortie brute non conservée: ${String(err)}`,
+      }),
+    );
+  }
 }
 
 async function recordScan(

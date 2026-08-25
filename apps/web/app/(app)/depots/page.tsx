@@ -122,7 +122,14 @@ export default function ReposPage() {
         value,
         repositoryId: selected?.id,
       });
-      setTargets((cur) => [...(cur ?? []), t]);
+      // La création est idempotente côté api : resaisir un hôte déjà connu
+      // renvoie la cible EXISTANTE, éventuellement déjà vérifiée. On remplace
+      // donc par identifiant au lieu d'empiler — sans quoi l'écran afficherait
+      // deux fois la même cible et contredirait le service.
+      setTargets((cur) => {
+        const rest = (cur ?? []).filter((x) => x.id !== t.id);
+        return [...rest, t];
+      });
       setTargetId(t.id);
       setTargetUrl("");
     } catch (e) {

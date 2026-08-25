@@ -27,6 +27,7 @@ import {
   type AuditRun,
   type Finding,
   type Report,
+  type Scan,
 } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { Deliverables } from "@/components/app/deliverables";
@@ -36,10 +37,94 @@ const STEPS = ["queued", "cloning", "scanning", "analyzing", "reporting", "done"
 const TERMINAL = new Set(["done", "completed_with_errors", "failed", "canceled"]);
 const TRIAGE_OPTIONS = ["open", "false_positive", "ignored", "accepted"];
 
+/** États d'un moteur dont l'issue est connue — ils comptent dans l'avancement. */
+const SCAN_TERMINAL = new Set(["success", "partial", "failed", "skipped"]);
+
+/** Le message que le moteur a laissé en échouant, quand il y en a un. */
+function reasonOf(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const m = (error as { message?: unknown }).message;
+  return typeof m === "string" && m ? m.slice(0, 300) : undefined;
+}
+
+/** Champs réellement renseignés. Un spread naïf écraserait une valeur connue
+ *  par un `undefined` porté par la mise à jour — c'est ainsi qu'une durée ou un
+ *  code de sortie déjà affiché disparaît en cours de relevé. */
+function defined<T extends object>(o: T): Partial<T> {
+  return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>;
+}
+
+/**
+ * Fusionner des lignes moteur dans la trace, en clé (pilier, outil).
+ *
+ * Deux sources écrivent ici — les lignes persistées et le flux — et elles se
+ * recouvrent. La clé était auparavant « même outil ET statut en cours », ce qui
+ * supposait qu'un moteur n'apparaisse qu'une fois lancé. Depuis que le plan est
+ * inscrit en base, un moteur existe AVANT de démarrer : cette règle ne trouvait
+ * plus rien à remplacer et empilait un doublon par événement.
+ *
+ * Une ligne dont l'issue est connue ne recule jamais : un rejeu après coupure
+ * peut redonner un « en cours » déjà périmé, et il ne doit pas effacer le
+ * résultat que le lecteur a sous les yeux.
+ */
+function mergeScanRows(current: TraceEntry[], incoming: TraceEntry[]): TraceEntry[] {
+  const next = [...current];
+  for (const row of incoming) {
+    const idx = next.findIndex(
+      (x) => x.kind === "scan" && x.pillar === row.pillar && x.tool === row.tool,
+    );
+    if (idx < 0) {
+      next.push(row);
+      continue;
+    }
+    const prev = next[idx];
+    if (!prev) {
+      next.push(row);
+      continue;
+    }
+    if (SCAN_TERMINAL.has(prev.status ?? "") && !SCAN_TERMINAL.has(row.status ?? "")) continue;
+    // `prev` porte déjà `kind` et `at` ; `defined` ne fait que recouvrir des
+    // champs facultatifs, d'où l'assertion — le résultat reste une entrée
+    // complète, TypeScript perd juste cette information en fusionnant un
+    // Partial.
+    next[idx] = { ...prev, ...defined(row) } as TraceEntry;
+  }
+  return next;
+}
+
+/**
+ * Reconstruire la trace depuis les lignes persistées.
+ *
+ * C'est ce qui la rend indépendante du flux : rouvrir la page trois jours plus
+ * tard affiche la même trace, moteur par moteur, avec durées et codes de sortie.
+ * Les événements en direct ne font ensuite que la compléter.
+ */
+function traceFromScans(scans: Scan[]): TraceEntry[] {
+  return scans.map((s) => ({
+    kind: "scan" as const,
+    at: s.startedAt ?? s.createdAt,
+    tool: s.tool,
+    pillar: s.pillar,
+    status: s.status,
+    durationMs:
+      s.startedAt && s.finishedAt
+        ? new Date(s.finishedAt).getTime() - new Date(s.startedAt).getTime()
+        : undefined,
+    exitCode: s.exitCode ?? undefined,
+    image: s.imageDigest ?? undefined,
+    reason: reasonOf(s.error),
+    // Pas d'artefact, pas de lien : proposer un téléchargement qui rendrait 404
+    // vaut moins que ne rien proposer.
+    scanId: s.rawArtifactId ? s.id : undefined,
+  }));
+}
+
 export function RunView({ runId }: { runId: string }) {
   const [run, setRun] = useState<AuditRun | null>(null);
   const [status, setStatus] = useState("queued");
   const [trace, setTrace] = useState<TraceEntry[]>([]);
+  const [scans, setScans] = useState<Scan[]>([]);
+  const [canceling, setCanceling] = useState(false);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [sevFilter, setSevFilter] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -47,6 +132,18 @@ export function RunView({ runId }: { runId: string }) {
 
   const refreshFindings = useCallback(() => {
     api.listFindings(runId).then(setFindings).catch(() => {});
+  }, [runId]);
+
+  // Les scans persistés sont la trace de référence. On les relit au montage et
+  // à la fin du relevé : le direct complète, il ne remplace pas.
+  const refreshScans = useCallback(() => {
+    api
+      .listScans(runId)
+      .then((rows) => {
+        setScans(rows);
+        setTrace((t) => mergeScanRows(t, traceFromScans(rows)));
+      })
+      .catch(() => {});
   }, [runId]);
 
   // Snapshot the run first, then tail live events. Doing it in that order means
@@ -61,6 +158,8 @@ export function RunView({ runId }: { runId: string }) {
       }
     });
 
+    refreshScans();
+
     const es = new EventSource(eventsUrl(runId));
     es.addEventListener("status", (e) => {
       const d = JSON.parse((e as MessageEvent).data);
@@ -72,19 +171,11 @@ export function RunView({ runId }: { runId: string }) {
     });
     es.addEventListener("scan", (e) => {
       const d = JSON.parse((e as MessageEvent).data) as TraceEntry & { at: string };
-      setTrace((t) => {
-        // A terminal event REPLACES its own "running" row instead of stacking
-        // on top of it: the trace should read as a list of engines with their
-        // outcome, not as two lines per engine that the reader has to pair up.
-        const idx = t.findIndex(
-          (x) => x.kind === "scan" && x.tool === d.tool && x.status === "running",
-        );
-        const row: TraceEntry = { ...d, kind: "scan" };
-        if (d.status === "running" || idx < 0) return [...t, row];
-        const next = [...t];
-        next[idx] = row;
-        return next;
-      });
+      setTrace((t) => mergeScanRows(t, [{ ...d, kind: "scan" }]));
+      // Un moteur qui vient de finir a désormais une ligne complète en base —
+      // durée exacte, code de sortie, journal conservé. On la relit plutôt que
+      // de se contenter de l'événement, qui ne connaît pas l'artefact.
+      if (d.status && d.status !== "running") refreshScans();
     });
     es.addEventListener("log", (e) => {
       const d = JSON.parse((e as MessageEvent).data);
@@ -94,11 +185,28 @@ export function RunView({ runId }: { runId: string }) {
       setStatus(JSON.parse((e as MessageEvent).data).status);
       api.getAudit(runId).then(setRun);
       refreshFindings();
+      // Relire les lignes persistées une dernière fois : elles portent les
+      // durées et codes de sortie définitifs.
+      refreshScans();
       es.close();
     });
-    es.onerror = () => es.close();
+
+    // NE PAS fermer le flux sur erreur.
+    //
+    // `es.onerror = () => es.close()` coupait la seule reprise dont on dispose :
+    // EventSource se reconnecte tout seul, avec l'en-tête `Last-Event-ID`, et
+    // l'api rejoue désormais ce qui a été manqué. Fermer au premier hoquet
+    // réseau transformait une coupure d'une seconde en trace définitivement
+    // amputée — et c'est le comportement qu'avait la page.
+    //
+    // On laisse donc le navigateur retenter. Le seul cas où l'on ferme pour de
+    // bon est le relevé terminé (ci-dessus) ou le démontage (ci-dessous), sans
+    // quoi une page quittée laisserait une connexion à se rouvrir dans le vide.
+    es.onerror = () => {
+      // Rien : la reconnexion est prise en charge par le navigateur.
+    };
     return () => es.close();
-  }, [runId, refreshFindings]);
+  }, [runId, refreshFindings, refreshScans]);
 
   async function triage(f: Finding, s: string) {
     // Optimistic: triage is org-scoped and keyed on the fingerprint, so the
@@ -133,6 +241,25 @@ export function RunView({ runId }: { runId: string }) {
   });
 
   const running = !TERMINAL.has(status);
+
+  // Avancement réel : moteurs dont l'issue est connue sur moteurs prévus. Le
+  // dénominateur vient du plan inscrit en base au démarrage, pas d'une
+  // estimation — « 4 sur 7 » est vérifiable ligne par ligne dans la trace.
+  const engineTotal = scans.length;
+  const engineDone = scans.filter((s) => SCAN_TERMINAL.has(s.status)).length;
+  const percent = engineTotal > 0 ? Math.round((engineDone / engineTotal) * 100) : null;
+
+  async function cancel() {
+    setCanceling(true);
+    try {
+      await api.cancelAudit(runId);
+    } catch {
+      // L'arrêt a échoué : rendre le bouton plutôt que de laisser un état figé
+      // qui laisserait croire qu'une demande est en vol.
+      setCanceling(false);
+    }
+  }
+
   const stepIndex = STEPS.indexOf(
     (status === "completed_with_errors" ? "done" : status) as (typeof STEPS)[number],
   );
@@ -147,11 +274,70 @@ export function RunView({ runId }: { runId: string }) {
             ? `Lancé ${ago(run.createdAt)}${run.scoringVersion ? ` · barème v${run.scoringVersion}` : ""} · ${runId}`
             : undefined
         }
-        actions={<DeleteRun runId={runId} />}
+        actions={
+          <div className="flex items-center gap-3">
+            {running && (
+              <Button variant="quiet" size="sm" disabled={canceling} onClick={cancel}>
+                {canceling ? "arrêt demandé…" : "Arrêter"}
+              </Button>
+            )}
+            <DeleteRun runId={runId} />
+          </div>
+        }
       />
 
       {/* ── Progress ───────────────────────────────────────────────────── */}
       <section className="border-b border-line px-6 py-7 lg:px-10">
+        {percent !== null && (
+          <div className="mb-7">
+            <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2">
+              <div className="flex items-end gap-4">
+                <span
+                  className={cn(
+                    "font-display text-[clamp(3rem,9vw,5.5rem)] font-bold leading-[0.8] tracking-tightest tabular-nums",
+                    running ? "text-acid" : "text-mineral",
+                  )}
+                >
+                  {percent}
+                  <span className="text-[0.4em] align-super">%</span>
+                </span>
+                <p className="pb-2 font-mono text-data text-mute">
+                  {engineDone} moteur{engineDone > 1 ? "s" : ""} sur {engineTotal}
+                </p>
+              </div>
+              {canceling && running && (
+                <p className="pb-2 font-mono text-label uppercase text-high">
+                  arrêt demandé — le moteur en cours va à son terme
+                </p>
+              )}
+            </div>
+
+            <div
+              role="progressbar"
+              aria-valuenow={percent}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-label="Moteurs terminés"
+              className="mt-4 h-1.5 w-full bg-line"
+            >
+              <div
+                className={cn(
+                  "h-full transition-[width] duration-500 ease-out",
+                  running ? "bg-acid" : "bg-line-bright",
+                )}
+                style={{ width: `${percent}%` }}
+              />
+            </div>
+
+            {/* Ce pourcentage compte des MOTEURS, pas des phases. Le dire évite
+                qu'un lecteur lise 100 % pendant l'agrégation et le rapport, et
+                conclue que le relevé est fini alors qu'il travaille encore. */}
+            <p className="mt-2 font-mono text-label uppercase text-mute">
+              part des moteurs exécutés · l&apos;analyse et le rapport suivent
+            </p>
+          </div>
+        )}
+
         <ol className="flex flex-wrap items-center gap-x-2 gap-y-3">
           {STEPS.map((s, i) => {
             const state = i < stepIndex ? "done" : i === stepIndex ? "active" : "todo";
@@ -190,7 +376,7 @@ export function RunView({ runId }: { runId: string }) {
 
         {/* Kept after the run ends, not only while it is live: the trace is how
             anyone answers "why did this pillar find nothing" afterwards. */}
-        <RunTrace entries={trace} />
+        <RunTrace entries={trace} runId={runId} />
       </section>
 
       {/* ── Score ──────────────────────────────────────────────────────── */}

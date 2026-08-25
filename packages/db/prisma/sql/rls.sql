@@ -68,7 +68,7 @@ DECLARE
   -- sessions by anything else must scope by userId explicitly.
   tenant_tables text[] := ARRAY[
     'organizations','memberships','invitations','connections','repositories',
-    'targets','audit_runs','scans','findings','triage_states',
+    'targets','audit_runs','scans','run_events','findings','triage_states',
     'reports','branding_profiles','artifacts','activity_logs','abuse_events'
   ];
   org_col text;
