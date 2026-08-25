@@ -94,19 +94,26 @@ services:
   # Scanner containers get HTTP(S)_PROXY pointed here; requests to cloud
   # metadata / RFC1918 / loopback are denied. Per-audit host scoping is layered
   # on top (the scanner only targets the verified host).
-  # `entrypoint.sh` de l'image lance d'abord `squid -z` pour créer les
-  # répertoires de cache. Sans `cache_dir` — et il n'y en a pas ici, c'est
-  # voulu : mettre en cache sur disque le trafic des scanners n'a aucun intérêt
-  # et crée une rétention qu'on ne veut pas — cette passe sort en code non nul
-  # et l'entrypoint s'arrête AVANT de lancer le vrai squid. Le conteneur mourait
-  # donc au démarrage, en six lignes de journal sans message d'erreur.
+  # Squid mourait au démarrage sur :
   #
-  # On appelle squid directement. -N avant-plan, -Y démarrage rapide, -C pas de
-  # capture des signaux fatals. `restart` remet le garde-fou en place si le
-  # processus tombe : sans lui, un proxy mort le reste jusqu'au prochain
-  # déploiement, et DAST/UX échouent en silence pendant ce temps.
+  #   FATAL: Cannot open '/dev/stdout' for writing.
+  #
+  # Il abandonne ses privilèges pour devenir `proxy`, et ne peut alors plus
+  # ouvrir le descripteur de sortie standard, qui appartient à root. On démarre
+  # donc le conteneur DÉJÀ sous cet utilisateur : plus de privilège à
+  # abandonner, le descripteur lui appartient. Voir squid.conf, qui porte le
+  # `pid_filename none` que cela impose.
+  #
+  # On appelle squid directement plutôt que par l'entrypoint de l'image, qui
+  # suppose de tourner en root. -N avant-plan, -Y démarrage rapide, -C pas de
+  # capture des signaux fatals.
+  #
+  # `restart` remet le garde-fou en place si le processus tombe : sans lui, un
+  # proxy mort le reste jusqu'au prochain déploiement, et DAST/UX échouent en
+  # silence pendant tout ce temps.
   egress-proxy:
     image: ubuntu/squid:latest
+    user: proxy
     entrypoint: ["squid", "-f", "/etc/squid/squid.conf", "-N", "-Y", "-C"]
     volumes: ["./squid/squid.conf:/etc/squid/squid.conf:ro"]
     ports: ["3128:3128"]
