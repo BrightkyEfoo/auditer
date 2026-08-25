@@ -88,8 +88,16 @@ export type PillarResult = z.infer<typeof PillarResult>;
 /** The run-level rollup. */
 export const RunScore = z.object({
   scoringVersion: z.string(),
-  overall: z.number().min(0).max(100),
-  grade: Grade,
+  /**
+   * NULL when no pillar was measured, and that case is not hypothetical.
+   *
+   * A run whose every engine failed used to be graded 100/A: `computeScore`
+   * returned 100 for an empty pillar list, and the customer read a perfect score
+   * off an audit that had analysed nothing. "Unknown" and "clean" are different
+   * claims and the type has to be able to tell them apart, or the report cannot.
+   */
+  overall: z.number().min(0).max(100).nullable(),
+  grade: Grade.nullable(),
   pillars: z.array(PillarResult),
   counts: SeverityCounts,
   /**

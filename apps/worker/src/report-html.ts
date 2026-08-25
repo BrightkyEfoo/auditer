@@ -278,7 +278,7 @@ ${
     ? `<div class="score"><span class="n">${r.riskScore}</span><span>sur 100${
         r.summary ? ` · note ${esc(r.summary.overallGrade)}` : ""
       }</span></div>`
-    : `<p>Aucun score : le relevé ne s'est pas terminé normalement.</p>`
+    : `<div class="warn"><span class="lbl">Aucun score</span><br>Aucun pilier n'a pu être mesuré : les moteurs demandés n'ont pas abouti. Un relevé sans mesure ne vaut pas un relevé propre — la section « Méthodologie et couverture » nomme chaque moteur et la raison de son arrêt.</div>`
 }
 <div style="display:flex;width:100%;margin:2mm 0">${bar || '<span class="lbl">aucun finding</span>'}</div>
 <table><thead><tr><th>Gravité</th><th>Nombre</th><th>Part</th></tr></thead><tbody>

@@ -215,7 +215,11 @@ export async function aggregate(input: AggregateInput): Promise<AggregateOutput>
 
   // Report synthesis over the ranked findings (top-N by severity + AI priority).
   let summary: ExecutiveSummary | undefined;
-  if (enableAi && input.ai) {
+  // `score.overall === null` means no pillar was measured. There is nothing to
+  // summarise, and asking a model to write an executive summary over an audit
+  // that analysed nothing would produce the most confident-sounding page in the
+  // whole document — about no data at all.
+  if (enableAi && input.ai && score.overall !== null) {
     const ranked = [...findings].sort(
       (a, b) =>
         (b.ai?.priority ?? severityRank(b)) -

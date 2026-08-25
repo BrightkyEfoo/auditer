@@ -237,7 +237,6 @@ async function processAudit(job: AuditJob): Promise<void> {
         continue;
       }
 
-      pillarsRun.add(adapter.pillar);
       const scanId = await recordScan(
         organizationId,
         auditRunId,
@@ -254,7 +253,19 @@ async function processAudit(job: AuditJob): Promise<void> {
           stats: result.metrics,
         },
       );
-      if (result.exitClass === "partial") partialPillars.add(adapter.pillar);
+      // A pillar counts as MEASURED only if an engine actually produced a
+      // result. This is the defect that let a run report 100/100 with six of
+      // seven engines dead: `pillarsRun.add` fired for every scanner that was
+      // merely reached, including the ones that exited in failure, so the pillar
+      // entered scoring with zero findings — and zero findings is a perfect
+      // score. Only the infra-error path above marked anything partial; an
+      // engine that started and failed was indistinguishable from a clean one.
+      if (result.exitClass === "fail") {
+        partialPillars.add(adapter.pillar);
+      } else if (!result.skipped) {
+        pillarsRun.add(adapter.pillar);
+        if (result.exitClass === "partial") partialPillars.add(adapter.pillar);
+      }
       if (result.metrics) measured.push(result);
 
       for (const f of result.findings) {
@@ -345,8 +356,10 @@ async function processAudit(job: AuditJob): Promise<void> {
     );
     await publisher.log(
       auditRunId,
-      `score ${agg.score.overall}/100 (${agg.score.grade}) · ` +
-        agg.score.pillars.map((p) => `${p.pillar} ${p.score}`).join(" · "),
+      agg.score.overall === null
+        ? "score NON CALCULÉ — aucun pilier mesuré, tous les moteurs ont échoué"
+        : `score ${agg.score.overall}/100 (${agg.score.grade}) · ` +
+            agg.score.pillars.map((p) => `${p.pillar} ${p.score}`).join(" · "),
     );
     await publisher.log(
       auditRunId,
@@ -361,15 +374,21 @@ async function processAudit(job: AuditJob): Promise<void> {
     // Persist findings + pillar results + score + report summary.
     await persistResults(organizationId, auditRunId, agg, fpToScanId);
 
-    const finalStatus = partialPillars.size > 0 ? "completed_with_errors" : "done";
+    // Nothing measured is a failed audit, not a completed one with a caveat.
+    const finalStatus =
+      agg.score.overall === null
+        ? "failed"
+        : partialPillars.size > 0
+          ? "completed_with_errors"
+          : "done";
     await finalize(
       auditRunId,
       organizationId,
       finalStatus,
-      agg.score.overall,
+      agg.score.overall ?? undefined,
       agg.vulnFeedsSnapshot,
     );
-    await publisher.done(auditRunId, finalStatus, agg.score.overall);
+    await publisher.done(auditRunId, finalStatus, agg.score.overall ?? undefined);
   } catch (err) {
     await finalize(auditRunId, organizationId, "failed");
     await publisher.log(auditRunId, `audit failed: ${String(err)}`);

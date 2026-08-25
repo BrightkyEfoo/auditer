@@ -56,6 +56,11 @@ Hard rules:
 - Order the remediation roadmap most-impactful-first.
 - Return only the structured tool call.`;
 
+/**
+ * Only ever called for a graded run — orchestrator.ts refuses to synthesise a
+ * summary when `score.overall` is null, because an audit that measured nothing
+ * has nothing to summarise. The non-null assertions below rest on that gate.
+ */
 function buildContext(score: RunScore, top: Finding[]): string {
   const lines: string[] = [
     `OVERALL GRADE: ${score.grade} (score ${score.overall}/100, scoring v${score.scoringVersion})`,
@@ -97,13 +102,13 @@ export async function synthesizeReport(
 
   const parsed = ExecutiveSummarySchema.safeParse({
     ...raw,
-    overallGrade: score.grade, // force authoritative grade regardless of model
+    overallGrade: score.grade!, // force authoritative grade regardless of model
     model: MODELS.synth,
   });
   if (!parsed.success) {
     return {
       headline: `Audit complete — overall grade ${score.grade}.`,
-      overallGrade: score.grade,
+      overallGrade: score.grade!,
       riskPosture: "Automated summary unavailable; see findings below.",
       keyRisks: [],
       remediationRoadmap: [],

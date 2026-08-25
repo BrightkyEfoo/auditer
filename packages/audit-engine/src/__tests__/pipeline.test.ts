@@ -115,6 +115,29 @@ describe("scoring", () => {
     expect(withFp.pillars[0]!.score).toBe(100);
   });
 
+  it("ne note RIEN quand aucun pilier n'a ete mesure", () => {
+    // The defect this locks down: a run whose every engine failed was graded
+    // 100/A. An empty pillar list has no deductions, and no deductions read as
+    // flawless — the customer saw a perfect score on an audit that had analysed
+    // nothing. "Unknown" is not "clean".
+    const score = computeScore({ findings: [], pillarsRun: [], kloc: 50 });
+    expect(score.overall).toBeNull();
+    expect(score.grade).toBeNull();
+    expect(score.pillars).toEqual([]);
+  });
+
+  it("note les piliers mesures et ignore ceux qui ne l'ont pas ete", () => {
+    // One pillar measured clean, another whose only engine died. The dead one
+    // must not average a 100 into the total.
+    const score = computeScore({
+      findings: [finding({ pillar: "sast", severity: "medium" })],
+      pillarsRun: ["sast"],
+      kloc: 50,
+    });
+    expect(score.pillars.map((p) => p.pillar)).toEqual(["sast"]);
+    expect(score.overall).toBe(score.pillars[0]!.score);
+  });
+
   it("is deterministic for identical input", () => {
     const input = {
       findings: [finding({ pillar: "sast", severity: "medium" })],

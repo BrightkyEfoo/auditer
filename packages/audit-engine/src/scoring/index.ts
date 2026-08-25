@@ -140,14 +140,21 @@ export function computeScore(input: ScoreInput): RunScore {
 
   // Overall = worst-weighted rollup: mean of pillar scores, but the overall
   // grade also inherits the worst pillar ceiling.
+  // No pillar measured means no score, NOT a perfect one. This branch returned
+  // 100 and it is how a run with every engine dead reported 100/100: an empty
+  // pillar list has no deductions, and no deductions read as flawless. The
+  // caller persists null and marks the run in error rather than publishing a
+  // grade for an audit that analysed nothing.
   const overall =
     pillarResults.length === 0
-      ? 100
+      ? null
       : Math.round(
           pillarResults.reduce((s, p) => s + p.score, 0) / pillarResults.length,
         );
-  let overallGrade = gradeFromScore(overall);
-  for (const p of pillarResults) overallGrade = worseGrade(overallGrade, p.grade);
+  let overallGrade: Grade | null = overall === null ? null : gradeFromScore(overall);
+  if (overallGrade !== null) {
+    for (const p of pillarResults) overallGrade = worseGrade(overallGrade, p.grade);
+  }
 
   return {
     scoringVersion: SCORING_VERSION,
