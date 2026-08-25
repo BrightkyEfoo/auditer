@@ -111,6 +111,25 @@ export interface Connection {
   status: string;
 }
 
+/**
+ * Cible d'un pilier réseau (DAST/UX). Elle n'est scannable qu'une fois
+ * `verificationStatus === "verified"` : l'api refuse la mise en file et le
+ * worker revérifie avant de lancer quoi que ce soit. Le jeton est la valeur
+ * exacte à publier en TXT sur `apexDomain`.
+ */
+export interface Target {
+  id: string;
+  kind: "domain" | "origin" | "api";
+  value: string;
+  apexDomain: string | null;
+  verificationMethod: string | null;
+  verificationStatus: "unverified" | "pending" | "verified" | "revoked";
+  verificationToken: string | null;
+  resolvedIps: string[];
+  repositoryId: string | null;
+  createdAt: string;
+}
+
 export interface RemoteRepo {
   externalRepoId: string;
   fullName: string;
@@ -131,6 +150,17 @@ export const api = {
       method: "POST",
       body: JSON.stringify(repo),
     }),
+  /* ── Cibles réseau ─────────────────────────────────────────────────────
+     Le relevé réseau vise un HÔTE, pas un dépôt : c'est un tiers tant que sa
+     propriété n'est pas prouvée. D'où ces trois appels, et pas un raccourci. */
+
+  listTargets: () => req<Target[]>("/targets"),
+  createTarget: (body: { kind: "domain" | "origin" | "api"; value: string; repositoryId?: string }) =>
+    req<Target>("/targets", { method: "POST", body: JSON.stringify(body) }),
+  /** Relit le TXT. `verified: false` renvoie l'enregistrement attendu en clair. */
+  verifyTarget: (id: string) =>
+    req<{ verified: boolean; hint?: string }>(`/targets/${id}/verify`, { method: "POST" }),
+
   createAudit: (body: { repositoryId?: string; targetId?: string; pillars: string[] }) =>
     req<{ runId: string; status: string }>("/audits", {
       method: "POST",

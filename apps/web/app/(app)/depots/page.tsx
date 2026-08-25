@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { PageHead } from "@/components/app/shell";
 import { Button, ButtonLink, Chip, Empty, Label, Spinner, inputClass } from "@/components/ui";
 import { PILLARS } from "@/lib/content";
-import { api, type Connection, type RemoteRepo, type Repo } from "@/lib/api";
+import { api, type Connection, type RemoteRepo, type Repo, type Target } from "@/lib/api";
 import { cn } from "@/lib/cn";
 
 const PROVIDER_FR: Record<string, string> = {
@@ -36,11 +36,24 @@ export default function ReposPage() {
   const [pillars, setPillars] = useState<string[]>(["secrets", "sca"]);
   const [busy, setBusy] = useState(false);
 
+  // Cibles réseau. Elles ne sont chargées et affichées que quand un pilier
+  // réseau est retenu : hors de ce cas, elles n'ont rien à dire.
+  const [targets, setTargets] = useState<Target[] | null>(null);
+  const [targetId, setTargetId] = useState<string | null>(null);
+  const [targetUrl, setTargetUrl] = useState("");
+  const [creatingTarget, setCreatingTarget] = useState(false);
+  const [verifying, setVerifying] = useState<string | null>(null);
+  const [verifyHint, setVerifyHint] = useState<string | null>(null);
+
   // Two-step deletion, held in the page rather than in a `confirm()` dialog —
   // the row stays visible while its removal is being confirmed, and the project
   // forbids native dialogs anyway.
   const [armed, setArmed] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+
+  const refreshTargets = useCallback(() => {
+    api.listTargets().then(setTargets).catch(() => setTargets([]));
+  }, []);
 
   const refresh = useCallback(() => {
     api.listConnections().then(setConnections).catch(() => setConnections([]));
@@ -53,6 +66,7 @@ export default function ReposPage() {
       });
   }, []);
   useEffect(refresh, [refresh]);
+  useEffect(refreshTargets, [refreshTargets]);
 
   async function browse(c: Connection) {
     setBrowsing(c);
@@ -96,12 +110,67 @@ export default function ReposPage() {
     }
   }
 
+  async function addTarget() {
+    const value = targetUrl.trim();
+    if (!value) return;
+    setCreatingTarget(true);
+    setError(null);
+    setVerifyHint(null);
+    try {
+      const t = await api.createTarget({
+        kind: "origin",
+        value,
+        repositoryId: selected?.id,
+      });
+      setTargets((cur) => [...(cur ?? []), t]);
+      setTargetId(t.id);
+      setTargetUrl("");
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setCreatingTarget(false);
+    }
+  }
+
+  // La vérification relit le DNS côté serveur. Un échec n'est PAS une erreur :
+  // un enregistrement TXT met du temps à se propager, et le serveur renvoie
+  // alors l'enregistrement attendu, qu'on réaffiche tel quel.
+  async function verify(id: string) {
+    setVerifying(id);
+    setVerifyHint(null);
+    setError(null);
+    try {
+      const res = await api.verifyTarget(id);
+      if (res.verified) {
+        setTargets((cur) =>
+          (cur ?? []).map((t) =>
+            t.id === id ? { ...t, verificationStatus: "verified" as const } : t,
+          ),
+        );
+      } else {
+        setVerifyHint(res.hint ?? "enregistrement TXT introuvable");
+      }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setVerifying(null);
+    }
+  }
+
   async function run() {
     if (!selected || pillars.length === 0) return;
+    if (needsTarget && !verifiedTargetId) return;
     setBusy(true);
     setError(null);
     try {
-      const { runId } = await api.createAudit({ repositoryId: selected.id, pillars });
+      const { runId } = await api.createAudit({
+        repositoryId: selected.id,
+        pillars,
+        // N'accompagne le relevé QUE si un pilier réseau est retenu : l'api
+        // rattache le run à la cible, et un rattachement sans pilier réseau
+        // ferait mentir le relevé sur ce qu'il a visé.
+        ...(needsTarget && verifiedTargetId ? { targetId: verifiedTargetId } : {}),
+      });
       router.push(`/audits/${runId}`);
     } catch (e) {
       setError(String(e));
@@ -117,6 +186,10 @@ export default function ReposPage() {
     r.fullName.toLowerCase().includes(query.trim().toLowerCase()),
   );
   const networkPillars = pillars.filter((p) => PILLARS.find((x) => x.id === p)?.network);
+  const needsTarget = networkPillars.length > 0;
+  const chosenTarget = (targets ?? []).find((t) => t.id === targetId) ?? null;
+  const verifiedTargetId =
+    chosenTarget && chosenTarget.verificationStatus === "verified" ? chosenTarget.id : null;
 
   return (
     <>
@@ -428,23 +501,139 @@ export default function ReposPage() {
                   </ul>
                 </div>
 
-                {networkPillars.length > 0 && (
-                  <p className="mt-5 border-l-2 border-high bg-high/5 px-4 py-3 text-data text-high">
-                    Les piliers réseau ne s&apos;exécutent que sur une cible dont la propriété est
-                    vérifiée par enregistrement DNS. Sans cible vérifiée, ils seront ignorés dans
-                    ce relevé.
-                  </p>
+                {needsTarget && (
+                  <div className="mt-7 border-l-2 border-high bg-high/5 px-4 py-4">
+                    <Label className="text-high">
+                      Cible réseau — requise par {networkPillars.join(" et ")}
+                    </Label>
+                    <p className="mt-2 max-w-[62ch] text-data text-high">
+                      Un pilier réseau envoie du trafic à un hôte. Tant que sa propriété
+                      n&apos;est pas prouvée par enregistrement DNS, cet hôte est un tiers et le
+                      relevé est refusé — ce n&apos;est pas une préférence d&apos;interface, la
+                      règle est tenue par l&apos;api et revérifiée par le worker.
+                    </p>
+
+                    {targets === null ? (
+                      <div className="mt-4">
+                        <Spinner label="chargement des cibles" />
+                      </div>
+                    ) : (
+                      <ul className="mt-4 border-t border-high/30">
+                        {targets.map((t) => {
+                          const on = t.id === targetId;
+                          const ok = t.verificationStatus === "verified";
+                          return (
+                            <li key={t.id} className="border-b border-high/30 py-3">
+                              <div className="flex flex-wrap items-center justify-between gap-3">
+                                <button
+                                  onClick={() => {
+                                    setTargetId(t.id);
+                                    setVerifyHint(null);
+                                  }}
+                                  aria-pressed={on}
+                                  className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                                >
+                                  <span
+                                    aria-hidden
+                                    className={cn(
+                                      "h-3.5 w-3.5 shrink-0 rounded-full border transition-colors duration-[180ms]",
+                                      on ? "border-acid bg-acid" : "border-line-bright",
+                                    )}
+                                  />
+                                  <span
+                                    className={cn(
+                                      "min-w-0 flex-1 truncate font-mono text-data",
+                                      on ? "text-mineral" : "text-mute",
+                                    )}
+                                  >
+                                    {t.value}
+                                  </span>
+                                </button>
+                                <Chip tone={ok ? "acid" : "warn"}>
+                                  {ok ? "vérifiée" : "non vérifiée"}
+                                </Chip>
+                                {!ok && (
+                                  <Button
+                                    variant="quiet"
+                                    size="sm"
+                                    disabled={verifying === t.id}
+                                    onClick={() => verify(t.id)}
+                                  >
+                                    {verifying === t.id ? "lecture DNS…" : "Vérifier"}
+                                  </Button>
+                                )}
+                              </div>
+
+                              {!ok && t.verificationToken && t.apexDomain && (
+                                <div className="mt-3 border border-high/30 bg-carbon px-4 py-3">
+                                  <p className="font-mono text-label uppercase text-mute">
+                                    Publier ce TXT sur {t.apexDomain}, puis vérifier
+                                  </p>
+                                  <p className="mt-1.5 break-all font-mono text-data text-mineral">
+                                    {t.verificationToken}
+                                  </p>
+                                </div>
+                              )}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      <input
+                        value={targetUrl}
+                        onChange={(e) => setTargetUrl(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") addTarget();
+                        }}
+                        placeholder="https://exemple.com"
+                        aria-label="URL ou hôte de la cible à ajouter"
+                        className={cn(inputClass, "min-w-0 flex-1")}
+                      />
+                      <Button
+                        variant="quiet"
+                        size="sm"
+                        disabled={creatingTarget || targetUrl.trim().length === 0}
+                        onClick={addTarget}
+                      >
+                        {creatingTarget ? "…" : "Ajouter"}
+                      </Button>
+                    </div>
+
+                    {verifyHint && (
+                      <p
+                        role="status"
+                        className="mt-3 break-all font-mono text-label uppercase text-high"
+                      >
+                        {verifyHint}
+                      </p>
+                    )}
+
+                    <p className="mt-3 max-w-[62ch] font-mono text-label uppercase leading-relaxed text-mute">
+                      La vérification épingle aussi les adresses IP résolues, pour qu&apos;un
+                      changement de DNS entre l&apos;autorisation et le scan soit détectable.
+                    </p>
+                  </div>
                 )}
 
                 <Button
                   variant="primary"
                   size="lg"
                   className="mt-7 w-full"
-                  disabled={busy || pillars.length === 0}
+                  disabled={busy || pillars.length === 0 || (needsTarget && !verifiedTargetId)}
                   onClick={run}
                 >
                   {busy ? "mise en file…" : "Lancer le relevé"}
                 </Button>
+
+                {needsTarget && !verifiedTargetId && (
+                  <p className="mt-3 font-mono text-label uppercase text-high">
+                    {chosenTarget
+                      ? "cible retenue non vérifiée — publiez le TXT puis vérifiez"
+                      : "choisissez une cible vérifiée, ou retirez les piliers réseau"}
+                  </p>
+                )}
 
                 <p className="mt-4 font-mono text-label uppercase leading-relaxed text-mute">
                   Le clone est éphémère et détruit à la fin. Votre code source n&apos;est jamais
