@@ -195,6 +195,13 @@ async function explain(
     );
     const r = await runner.run(spec);
     const out = r.stdout.trim();
+    // Keep the raw output. "0 findings from a document that clearly has some"
+    // cannot be diagnosed from a 300-character excerpt, and the fixture is
+    // deleted when the check ends.
+    const dumpRoot = process.env.WORKSPACE_ROOT ?? "/tmp";
+    const dump = join(dumpRoot, `verify-${adapter.id}.stdout.json`);
+    await writeFile(dump, r.stdout);
+    process.stdout.write(`[moteurs]   ${adapter.id} · sortie brute conservée : ${dump}\n`);
     process.stdout.write(
       `[moteurs]   ${adapter.id} · argv: ${(spec.cmd ?? []).join(" ")}\n` +
         `[moteurs]   ${adapter.id} · sortie ${r.exitCode}, stdout ${out.length} o, stderr ${r.stderr.length} o\n` +
