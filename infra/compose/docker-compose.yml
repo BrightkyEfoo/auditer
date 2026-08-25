@@ -73,6 +73,23 @@ services:
     command: ["server", "-dev"]
     ports: ["8200:8200"]
 
+  # Amorce du moteur transit. `server -dev` n'active QUE le moteur kv : sans
+  # cette étape, /v1/transit/encrypt/<clé> répond 404 et packages/crypto lève
+  # sur le premier seal() — la connexion GitLab meurt en 500 au callback.
+  # Idempotent, à relancer sans risque après chaque `up` (le mode dev garde
+  # tout en mémoire : un redémarrage d'openbao efface la clé).
+  openbao-init:
+    image: openbao/openbao:latest
+    depends_on: [openbao]
+    environment:
+      BAO_ADDR: http://openbao:8200
+      BAO_TOKEN: dev-root-token
+    entrypoint: >
+      /bin/sh -c "until bao status >/dev/null 2>&1; do sleep 1; done;
+      bao secrets enable transit >/dev/null 2>&1 || true;
+      bao write -f transit/keys/${OPENBAO_TRANSIT_KEY:-auditer-kek} >/dev/null &&
+      echo transit-ready"
+
   # SSRF/exfiltration backstop for network-enabled sandbox steps (DAST/UX).
   # Scanner containers get HTTP(S)_PROXY pointed here; requests to cloud
   # metadata / RFC1918 / loopback are denied. Per-audit host scoping is layered

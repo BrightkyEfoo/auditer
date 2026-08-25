@@ -71,6 +71,26 @@ services:
       BAO_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
     command: ["server", "-dev"]
 
+  # Amorce du moteur transit. `server -dev` n'active QUE le moteur kv : sans
+  # cette étape, /v1/transit/encrypt/<clé> répond 404 et packages/crypto lève
+  # sur le premier seal(). Le flux GitHub ne stocke aucun secret, donc rien ne
+  # franchissait ce chemin ; la connexion GitLab, elle, chiffre un jeton de
+  # rafraîchissement et mourait en 500 au callback.
+  #
+  # Idempotent : `secrets enable` échoue si déjà activé (avalé), `write -f` sur
+  # une clé existante est un no-op. api et worker attendent sa sortie en 0.
+  openbao-init:
+    image: openbao/openbao:latest
+    depends_on: [openbao]
+    environment:
+      BAO_ADDR: http://openbao:8200
+      BAO_TOKEN: dev-root-token
+    entrypoint: >
+      /bin/sh -c "until bao status >/dev/null 2>&1; do sleep 1; done;
+      bao secrets enable transit >/dev/null 2>&1 || true;
+      bao write -f transit/keys/${OPENBAO_TRANSIT_KEY:-auditer-kek} >/dev/null &&
+      echo transit-ready"
+
   egress-proxy:
     image: ubuntu/squid:latest
     volumes: ["./squid/squid.conf:/etc/squid/squid.conf:ro"]
@@ -90,6 +110,7 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       valkey: { condition: service_healthy }
+      openbao-init: { condition: service_completed_successfully }
     environment: &appenv
       NODE_ENV: production
       DATABASE_URL: postgresql://auditer:auditer@postgres:5432/auditer
@@ -101,6 +122,9 @@ services:
       S3_BUCKET: auditer
       OPENBAO_ADDR: http://openbao:8200
       OPENBAO_TOKEN: dev-root-token
+      # MÊME variable que celle qui crée la clé dans openbao-init : un écart ici
+      # se manifeste par un 404 transit à l'exécution, pas au démarrage.
+      OPENBAO_TRANSIT_KEY: "${OPENBAO_TRANSIT_KEY:-auditer-kek}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       # GitHub App (SaaS repo access) + OAuth login. Fill these in a server .env
       # after registering the App; the connect flow needs them.
@@ -149,6 +173,7 @@ services:
       postgres: { condition: service_healthy }
       valkey: { condition: service_healthy }
       docker-socket-proxy: { condition: service_started }
+      openbao-init: { condition: service_completed_successfully }
     environment:
       <<: *appenv
       DOCKER_HOST: tcp://docker-socket-proxy:2375
