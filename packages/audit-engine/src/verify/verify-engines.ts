@@ -262,9 +262,15 @@ async function buildFixture(): Promise<string> {
   await exec("git", ["-C", dir, "add", "-A"], { env });
   await exec("git", ["-C", dir, "commit", "--quiet", "-m", "fixture"], { env });
 
-  // The sandbox runs as 65534 and mounts this read-only; without this the
-  // scanners cannot even list the tree, and every engine would fail for a
-  // reason that has nothing to do with the engine.
+  // Hand the tree to 65534, exactly as workspace.ts does for a real clone.
+  // Readable-by-all is not enough for gitleaks: git refuses a repository whose
+  // owner differs from the caller ("dubious ownership"), and it refuses it in
+  // the worst possible way — stderr non-empty, so gitleaks reports
+  // `failed to scan Git repository` then `no leaks found in partial scan` and
+  // exits 1. Same misleading sentence as the blobless-clone defect, different
+  // cause. A fixture that does not reproduce the worker's own preparation would
+  // fail engines for reasons that say nothing about the engines.
+  await exec("chown", ["-R", "65534:65534", dir]);
   await exec("chmod", ["-R", "a+rX", dir]);
   await chmod(dir, 0o755);
   return dir;

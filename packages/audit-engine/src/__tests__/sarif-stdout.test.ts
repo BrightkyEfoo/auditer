@@ -48,9 +48,29 @@ describe("hasSarifReport", () => {
     expect(hasSarifReport('{"runs": "not-an-array"}')).toBe(false);
   });
 
-  it("extractSarif découpe entre la première accolade et la dernière", () => {
-    expect(extractSarif('noise {"a":1} tail }')).toBe('{"a":1} tail }');
+  it("lit un SARIF INDENTÉ, pas seulement compact", () => {
+    // The defect this locks down: the old slice looked for `{"` — a brace glued
+    // to a key — so zizmor and trivy, which both pretty-print, had their reports
+    // sliced from the first `{"` INSIDE the document and thrown away. trivy
+    // config produced four findings on the fixture and all four were lost here.
+    const pretty = JSON.stringify(
+      { version: "2.1.0", runs: [{ tool: { driver: { name: "trivy" } }, results: [] }] },
+      null,
+      2,
+    );
+    expect(pretty.startsWith('{\n')).toBe(true); // the shape that used to break it
+    expect(hasSarifReport(pretty)).toBe(true);
+    expect(extractSarif(pretty)).toBe(pretty);
+  });
+
+  it("découpe le JSON autour des lignes de progression", () => {
+    const pretty = JSON.stringify({ runs: [] }, null, 2);
+    expect(extractSarif(`scanning...\n${pretty}\ndone\n`)).toBe(pretty);
+  });
+
+  it("rend null quand il n'y a aucun JSON", () => {
     expect(extractSarif("aucun json")).toBeNull();
+    expect(extractSarif("   ")).toBeNull();
   });
 });
 

@@ -20,15 +20,60 @@
 /**
  * Extract the JSON document from a scanner's stdout.
  *
- * Scanners interleave progress lines with the report, so the payload is sliced
- * between the first `{"` and the last `}` rather than assuming stdout is pure
- * JSON.
+ * The version this replaces looked for the first `{"` — an opening brace glued
+ * to a key — and it silently discarded the reports of every tool that
+ * pretty-prints. zizmor and trivy both emit `{\n  "version": ...`, so the slice
+ * started at the first `{"` INSIDE the document (`[{"logicalLocations"`), the
+ * parse threw, `parse()` returned an empty array, and the pillar read clean.
+ * Measured: trivy config produced 4 findings on the verification fixture and all
+ * four were thrown away here, after the adapter had already been fixed twice.
+ *
+ * The tiers below go from strictest to loosest, so a tool that prints nothing
+ * but JSON is never at the mercy of a heuristic:
+ *
+ *   1. the whole of stdout parses — the common case;
+ *   2. first `{` to last `}` — a tool that printed progress lines around it;
+ *   3. the same slice starting from the first `{` on its own line — a tool whose
+ *      progress lines themselves contain braces.
  */
 export function extractSarif(s: string): string | null {
-  const start = s.indexOf('{"');
-  const end = s.lastIndexOf("}");
-  if (start === -1 || end === -1 || end < start) return null;
-  return s.slice(start, end + 1);
+  const trimmed = s.trim();
+  if (!trimmed) return null;
+
+  if (parses(trimmed)) return trimmed;
+
+  const first = trimmed.indexOf("{");
+  const last = trimmed.lastIndexOf("}");
+  if (first === -1 || last === -1 || last < first) return null;
+
+  const sliced = trimmed.slice(first, last + 1);
+  if (parses(sliced)) return sliced;
+
+  // A progress line carrying a brace shifted the start. Retry from each line
+  // that BEGINS a JSON document; there are only ever a handful.
+  const lines = trimmed.split("\n");
+  let offset = 0;
+  for (const line of lines) {
+    if (line.startsWith("{") && offset > first) {
+      const candidate = trimmed.slice(offset, last + 1);
+      if (parses(candidate)) return candidate;
+    }
+    offset += line.length + 1;
+  }
+
+  // Nothing parsed. Return the widest slice anyway: the caller parses again and
+  // handles the failure, and returning null here would erase the difference
+  // between "no report" and "a report we could not read".
+  return sliced;
+}
+
+function parses(s: string): boolean {
+  try {
+    JSON.parse(s);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
