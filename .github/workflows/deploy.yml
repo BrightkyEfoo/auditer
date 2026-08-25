@@ -215,3 +215,21 @@ jobs:
           ssh -p "${{ vars.DEPLOY_PORT || '22' }}" \
             "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
             "cd ${{ vars.DEPLOY_PATH }} && docker compose -p auditer --env-file .env -f infra/compose/docker-compose.server.yml up -d"
+
+      - name: Verify every engine actually runs
+        # FATAL on purpose. Six engines were found dead in production in a single
+        # afternoon and `pnpm build` was green for every one of them: a type
+        # checker cannot know that a flag vanished upstream, that an image ships
+        # without its rules, that a container cannot write where the tool expects
+        # to, or that the daemon truncates a report at 64 KiB. Only running them
+        # knows.
+        #
+        # A failing engine is not a cosmetic defect in this product — it is a
+        # hole in a pillar, and a hole in a pillar reads to a customer as a clean
+        # pillar. A red deploy is the cheapest possible way to learn that.
+        #
+        # Runs after `up` because it needs the socket-proxy to spawn containers.
+        run: |
+          ssh -p "${{ vars.DEPLOY_PORT || '22' }}" \
+            "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
+            "cd ${{ vars.DEPLOY_PATH }} && docker compose -p auditer --env-file .env -f infra/compose/docker-compose.server.yml --profile ops run --rm -T engines-verify"
