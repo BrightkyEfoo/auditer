@@ -47,7 +47,17 @@ export class SseController {
     };
 
     // Snapshot first so a late client immediately knows current state.
-    send("status", { type: "status", auditRunId: id, status: run.status });
+    // `at` is NOT optional: le contrat AuditEvent (packages/types/src/sse.ts)
+    // l'exige sur chaque événement, et le client s'en sert pour horodater la
+    // ligne de trace. Il manquait ici — `send()` prend un `unknown`, donc rien
+    // ne le vérifiait — et comme cet instantané est le PREMIER message reçu à
+    // chaque ouverture, la page de relevé plantait à tous les coups.
+    send("status", {
+      type: "status",
+      auditRunId: id,
+      status: run.status,
+      at: new Date().toISOString(),
+    });
 
     // Tail live events.
     const sub = this.redis.subscriber();

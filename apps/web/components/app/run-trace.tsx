@@ -64,6 +64,22 @@ function ms(n?: number): string {
   return `${Math.floor(s / 60)} min ${Math.round(s % 60)} s`;
 }
 
+/**
+ * Heure d'une entrée, en HH:MM:SS.
+ *
+ * `at` est requis par le contrat AuditEvent, mais il traverse un `JSON.parse`
+ * suivi d'un `as` : le typage ne prouve rien sur ce qui arrive vraiment. Un
+ * seul événement sans horodatage — c'était le cas de l'instantané d'ouverture
+ * de la SSE — faisait lever `.slice()` pendant le rendu, et React démontait
+ * l'arbre entier : la trace ne perdait pas une ligne, la page devenait blanche.
+ * Une trace d'exécution qui se tait parce qu'un champ manque est exactement ce
+ * que ce composant existe pour éviter.
+ */
+function clock(at?: string): string {
+  const hhmmss = at?.slice(11, 19);
+  return hhmmss && hhmmss.length === 8 ? hhmmss : "--:--:--";
+}
+
 /** Digest references are unreadable in full; keep the tag or the first bytes. */
 function shortImage(ref?: string): string | null {
   if (!ref) return null;
@@ -91,7 +107,7 @@ export function RunTrace({ entries }: { entries: TraceEntry[] }) {
             className="grid grid-cols-12 items-baseline gap-x-3 border-b border-line/60 px-4 py-2 last:border-b-0"
           >
             <span className="col-span-2 font-mono text-label text-line-bright sm:col-span-1">
-              {e.at.slice(11, 19)}
+              {clock(e.at)}
             </span>
 
             {e.kind === "scan" ? (
