@@ -1,5 +1,4 @@
 import Docker from "dockerode";
-import { PassThrough } from "node:stream";
 import type {
   SandboxRunner,
   SandboxSpec,
@@ -19,14 +18,6 @@ import { CONTAINER_SCRATCH_PATH } from "../ports/sandbox.js";
 
 const STDOUT_CAP = 8 * 1024 * 1024; // 8 MiB — enough for large SARIF, bounded
 
-/**
- * How long to keep reading after the container has exited.
- *
- * Generous on purpose: this only ever waits for bytes already produced, so it
- * costs nothing on a normal run and only bites when the socket is genuinely
- * stuck — a case that must fail loudly rather than return a truncated report.
- */
-const DRAIN_TIMEOUT_MS = 30_000;
 
 export interface DockerRunnerOpts {
   /** Points at the socket-proxy, e.g. "tcp://socket-proxy:2375". */
@@ -93,47 +84,9 @@ export class DockerGvisorRunner implements SandboxRunner {
       },
     });
 
-    const stdout = new CappedBuffer(STDOUT_CAP);
-    const stderr = new CappedBuffer(STDOUT_CAP);
     let timedOut = false;
 
     try {
-      const stream = await container.attach({
-        stream: true,
-        stdout: true,
-        stderr: true,
-      });
-      const outPt = new PassThrough();
-      const errPt = new PassThrough();
-      this.docker.modem.demuxStream(stream, outPt, errPt);
-      outPt.on("data", (c: Buffer) => stdout.push(c));
-      errPt.on("data", (c: Buffer) => stderr.push(c));
-
-      // The attached stream outlives the container's exit: `container.wait()`
-      // resolves when the process is gone, while whatever the kernel had not yet
-      // handed us is still in the socket. Reading the buffer at that moment
-      // returns the FIRST ~64 KiB and drops the rest — silently, and in
-      // proportion to how much the scanner had to say.
-      //
-      // Measured: semgrep emitted 1 086 300 bytes of SARIF and the worker read
-      // 65 476. The JSON was cut mid-document, `JSON.parse` threw, `parse()`
-      // returned an empty array, and the scan was recorded SUCCESSFUL with zero
-      // findings. Every scanner under 64 KiB — gitleaks, trivy, zizmor, hadolint
-      // — was unaffected, which is why this survived: it works on a toy
-      // repository and fails on exactly the repositories customers bring.
-      // Wait on the SOURCE stream, not on the demuxed PassThroughs:
-      // `modem.demuxStream` writes into them but never ends them, so an `end`
-      // listener there fires never — the first version of this fix waited 30
-      // seconds per engine and refused every scan. The PassThroughs are in
-      // flowing mode (a `data` listener is attached above), so every byte the
-      // demuxer writes is delivered synchronously; once the source is done,
-      // everything it carried is already in the buffers.
-      const drained = new Promise<void>((resolve) => {
-        stream.once("end", () => resolve());
-        stream.once("close", () => resolve());
-        stream.once("error", () => resolve());
-      });
-
       await container.start();
 
       const timer = setTimeout(() => {
@@ -144,29 +97,33 @@ export class DockerGvisorRunner implements SandboxRunner {
       const waitRes = await container.wait();
       clearTimeout(timer);
 
-      // Bounded: a half-open socket must not hang a worker forever. If the
-      // stream does not end in time we have a truncated report and no way to
-      // know where it was cut, so this THROWS rather than returning a document
-      // that would parse to fewer findings than the scanner found. A partial
-      // report that looks whole is the failure this whole file is guarding.
-      let drainTimer: NodeJS.Timeout | undefined;
-      const drainedOrTimeout = await Promise.race([
-        drained.then(() => "drained" as const),
-        new Promise<"timeout">((resolve) => {
-          drainTimer = setTimeout(() => resolve("timeout"), DRAIN_TIMEOUT_MS);
-        }),
-      ]);
-      if (drainTimer) clearTimeout(drainTimer);
-      if (drainedOrTimeout === "timeout" && !timedOut) {
-        throw new Error(
-          `sandbox: flux de sortie non terminé après ${DRAIN_TIMEOUT_MS} ms — rapport potentiellement tronqué, scan refusé`,
-        );
-      }
+      // Read the output from the container LOG, not from an attached stream.
+      //
+      // `container.attach` opens a hijacked connection (HTTP 101), and the
+      // worker never talks to the daemon directly — it goes through
+      // docker-socket-proxy. That proxy terminates the hijacked stream at
+      // 65 476 bytes, exactly and reproducibly. semgrep emitted 1 086 300 bytes
+      // of SARIF and the worker read the first 64 KiB of it: `JSON.parse` threw,
+      // `parse()` returned an empty array, and the scan was recorded SUCCESSFUL
+      // with zero findings. Every scanner whose report fits under 64 KiB —
+      // gitleaks, trivy, zizmor, hadolint — was unaffected, which is why this
+      // survived every earlier check: it works on a toy repository and fails on
+      // exactly the repositories customers bring.
+      //
+      // `logs` is an ordinary buffered response, so the proxy has nothing to cut
+      // short, and reading AFTER the wait means there is no race with the
+      // container's exit either.
+      const raw = (await container.logs({
+        stdout: true,
+        stderr: true,
+        follow: false,
+      })) as unknown as Buffer;
+      const { stdout, stderr } = demux(Buffer.from(raw));
 
       return {
         exitCode: waitRes.StatusCode ?? -1,
-        stdout: stdout.toString(),
-        stderr: stderr.toString(),
+        stdout,
+        stderr,
         timedOut,
         durationMs: Date.now() - started,
       };
@@ -177,19 +134,52 @@ export class DockerGvisorRunner implements SandboxRunner {
   }
 }
 
-/** Ring-capped buffer so a fork/log bomb can't OOM the worker. */
-class CappedBuffer {
-  private chunks: Buffer[] = [];
-  private size = 0;
-  constructor(private readonly cap: number) {}
-  push(c: Buffer): void {
-    if (this.size >= this.cap) return;
-    const room = this.cap - this.size;
-    const slice = c.length > room ? c.subarray(0, room) : c;
-    this.chunks.push(slice);
-    this.size += slice.length;
+/**
+ * Split a Docker log stream into stdout and stderr.
+ *
+ * The log stream is framed: an 8-byte header per chunk, byte 0 the stream id
+ * (1 = stdout, 2 = stderr) and bytes 4..8 a big-endian payload length. A
+ * container created without a TTY — every scanner here — always produces this
+ * framing, so a buffer that does not parse as frames is a bug worth surfacing
+ * rather than guessing around.
+ *
+ * Both sides are capped so a log bomb cannot OOM the worker. Truncation is
+ * announced in the text itself: a report cut silently is the failure this
+ * runner keeps being bitten by.
+ */
+function demux(buf: Buffer): { stdout: string; stderr: string } {
+  const out: Buffer[] = [];
+  const err: Buffer[] = [];
+  let outSize = 0;
+  let errSize = 0;
+  let offset = 0;
+
+  while (offset + 8 <= buf.length) {
+    const type = buf[offset];
+    const len = buf.readUInt32BE(offset + 4);
+    const start = offset + 8;
+    const endAt = Math.min(start + len, buf.length);
+    const payload = buf.subarray(start, endAt);
+    if (type === 2) {
+      if (errSize < STDOUT_CAP) {
+        const slice = payload.subarray(0, STDOUT_CAP - errSize);
+        err.push(slice);
+        errSize += slice.length;
+      }
+    } else {
+      if (outSize < STDOUT_CAP) {
+        const slice = payload.subarray(0, STDOUT_CAP - outSize);
+        out.push(slice);
+        outSize += slice.length;
+      }
+    }
+    offset = endAt;
   }
-  toString(): string {
-    return Buffer.concat(this.chunks).toString("utf8");
-  }
+
+  const suffix = (size: number): string =>
+    size >= STDOUT_CAP ? `\n[bac à sable: sortie tronquée à ${STDOUT_CAP} octets]` : "";
+  return {
+    stdout: Buffer.concat(out).toString("utf8") + suffix(outSize),
+    stderr: Buffer.concat(err).toString("utf8") + suffix(errSize),
+  };
 }
