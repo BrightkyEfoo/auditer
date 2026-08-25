@@ -7,6 +7,7 @@ import { defaultRegistry } from "../registry.js";
 import { runScan } from "../orchestrator.js";
 import { DockerGvisorRunner } from "../sandbox/docker-gvisor-runner.js";
 import type { ScanContext } from "../ports/adapter.js";
+import type { SandboxSpec } from "../ports/sandbox.js";
 
 const exec = promisify(execFile);
 
@@ -166,11 +167,45 @@ export async function verifyEngines(): Promise<EngineVerdict[]> {
         `[moteurs] ${mark} ${verdict.id.padEnd(14)} ${String(verdict.findings).padStart(4)} finding(s)  ` +
           `${verdict.exitClass} (${verdict.exitCode})  ${Math.round(verdict.durationMs / 100) / 10}s  ${verdict.detail}\n`,
       );
+      // A failing check that only says "0 findings" sends whoever reads it back
+      // to reproducing the container by hand — which is the work this file was
+      // written to stop. On failure, run the same spec once more and print what
+      // the engine actually said.
+      if (!verdict.ok) await explain(adapter, runner, ctx);
     }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
   return verdicts;
+}
+
+/**
+ * Re-runs one engine's spec and prints its raw output, so a red line explains
+ * itself instead of sending a reader back to a manual `docker run`.
+ */
+async function explain(
+  adapter: { id: string; buildSpec: (ctx: ScanContext) => SandboxSpec },
+  runner: DockerGvisorRunner,
+  ctx: ScanContext,
+): Promise<void> {
+  try {
+    const spec = adapter.buildSpec(ctx);
+    spec.mounts = spec.mounts.map((m) =>
+      m.target === "/repo" ? { ...m, source: ctx.workspacePath } : m,
+    );
+    const r = await runner.run(spec);
+    const out = r.stdout.trim();
+    process.stdout.write(
+      `[moteurs]   ${adapter.id} · argv: ${(spec.cmd ?? []).join(" ")}\n` +
+        `[moteurs]   ${adapter.id} · sortie ${r.exitCode}, stdout ${out.length} o, stderr ${r.stderr.length} o\n` +
+        `[moteurs]   ${adapter.id} · stdout: ${out.slice(0, 300).replace(/\n/g, " ")}\n` +
+        `[moteurs]   ${adapter.id} · stderr: ${r.stderr.trim().slice(-400).replace(/\n/g, " ")}\n`,
+    );
+  } catch (err) {
+    process.stdout.write(
+      `[moteurs]   ${adapter.id} · diagnostic impossible : ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+  }
 }
 
 /**
@@ -189,8 +224,15 @@ async function buildFixture(): Promise<string> {
     join(dir, "config.js"),
     // Two separate baits: a hardcoded credential for the secret scanners and an
     // eval on request input for the SAST rules.
-    `const AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";\n` +
-      `const AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE";\n` +
+    //
+    // NOT the AWS documentation key (`AKIAIOSFODNN7EXAMPLE`): gitleaks
+    // allowlists it by name, precisely because it appears in every tutorial. A
+    // fixture built on it produces a green "no leaks" that proves nothing, which
+    // is the exact failure mode this whole file exists to catch. The value below
+    // is synthetic and matches no real account — it only has to match the rule's
+    // shape, `AKIA` followed by sixteen upper-case alphanumerics.
+    `const AWS_ACCESS_KEY_ID = "AKIA2E0K4NPFXQ7RTJ5W";\n` +
+      `const AWS_SECRET_ACCESS_KEY = "hV3kQ8pZ1mR6tY9wA2sD4fG7jL0xC5vB8nM1qE3u";\n` +
       `module.exports.run = (req) => eval(req.query.expr);\n`,
   );
 
