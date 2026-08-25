@@ -19,6 +19,15 @@ import { CONTAINER_SCRATCH_PATH } from "../ports/sandbox.js";
 
 const STDOUT_CAP = 8 * 1024 * 1024; // 8 MiB — enough for large SARIF, bounded
 
+/**
+ * How long to keep reading after the container has exited.
+ *
+ * Generous on purpose: this only ever waits for bytes already produced, so it
+ * costs nothing on a normal run and only bites when the socket is genuinely
+ * stuck — a case that must fail loudly rather than return a truncated report.
+ */
+const DRAIN_TIMEOUT_MS = 30_000;
+
 export interface DockerRunnerOpts {
   /** Points at the socket-proxy, e.g. "tcp://socket-proxy:2375". */
   dockerHost?: string;
@@ -100,6 +109,29 @@ export class DockerGvisorRunner implements SandboxRunner {
       outPt.on("data", (c: Buffer) => stdout.push(c));
       errPt.on("data", (c: Buffer) => stderr.push(c));
 
+      // The attached stream outlives the container's exit: `container.wait()`
+      // resolves when the process is gone, while whatever the kernel had not yet
+      // handed us is still in the socket. Reading the buffer at that moment
+      // returns the FIRST ~64 KiB and drops the rest — silently, and in
+      // proportion to how much the scanner had to say.
+      //
+      // Measured: semgrep emitted 1 086 300 bytes of SARIF and the worker read
+      // 65 476. The JSON was cut mid-document, `JSON.parse` threw, `parse()`
+      // returned an empty array, and the scan was recorded SUCCESSFUL with zero
+      // findings. Every scanner under 64 KiB — gitleaks, trivy, zizmor, hadolint
+      // — was unaffected, which is why this survived: it works on a toy
+      // repository and fails on exactly the repositories customers bring.
+      const drained = new Promise<void>((resolve) => {
+        let pending = 2;
+        const done = (): void => {
+          if (--pending === 0) resolve();
+        };
+        outPt.once("end", done);
+        outPt.once("error", done);
+        errPt.once("end", done);
+        errPt.once("error", done);
+      });
+
       await container.start();
 
       const timer = setTimeout(() => {
@@ -109,6 +141,25 @@ export class DockerGvisorRunner implements SandboxRunner {
 
       const waitRes = await container.wait();
       clearTimeout(timer);
+
+      // Bounded: a half-open socket must not hang a worker forever. If the
+      // stream does not end in time we have a truncated report and no way to
+      // know where it was cut, so this THROWS rather than returning a document
+      // that would parse to fewer findings than the scanner found. A partial
+      // report that looks whole is the failure this whole file is guarding.
+      let drainTimer: NodeJS.Timeout | undefined;
+      const drainedOrTimeout = await Promise.race([
+        drained.then(() => "drained" as const),
+        new Promise<"timeout">((resolve) => {
+          drainTimer = setTimeout(() => resolve("timeout"), DRAIN_TIMEOUT_MS);
+        }),
+      ]);
+      if (drainTimer) clearTimeout(drainTimer);
+      if (drainedOrTimeout === "timeout" && !timedOut) {
+        throw new Error(
+          `sandbox: flux de sortie non terminé après ${DRAIN_TIMEOUT_MS} ms — rapport potentiellement tronqué, scan refusé`,
+        );
+      }
 
       return {
         exitCode: waitRes.StatusCode ?? -1,
