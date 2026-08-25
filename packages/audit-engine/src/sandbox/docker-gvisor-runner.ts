@@ -1,4 +1,9 @@
 import Docker from "dockerode";
+import { mkdtemp, readFile, rm, chmod } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import type {
   SandboxRunner,
   SandboxSpec,
@@ -15,6 +20,8 @@ import { CONTAINER_SCRATCH_PATH } from "../ports/sandbox.js";
  * boundary; if the proxy or runtime can't honor it, `run` throws rather than
  * degrade silently.
  */
+
+const exec = promisify(execFile);
 
 const STDOUT_CAP = 8 * 1024 * 1024; // 8 MiB — enough for large SARIF, bounded
 
@@ -53,6 +60,21 @@ export class DockerGvisorRunner implements SandboxRunner {
       env.push(`HTTPS_PROXY=${spec.network.proxyUrl}`);
       env.push(`http_proxy=${spec.network.proxyUrl}`);
       env.push(`https_proxy=${spec.network.proxyUrl}`);
+    }
+
+    // Report-by-file transport. See SandboxSpec.outputFile: the daemon
+    // truncates a single log line at 64 KiB, so stdout cannot carry a large
+    // report. The directory lives under WORKSPACE_ROOT because the daemon runs
+    // on the host and bind-mounts by HOST path — a path inside this container
+    // would name nothing on the other side.
+    let outDir: string | undefined;
+    if (spec.outputFile) {
+      const root = process.env.WORKSPACE_ROOT ?? tmpdir();
+      outDir = await mkdtemp(join(root, "auditer-out-"));
+      // The scanner runs unprivileged; it must be able to create the file.
+      await exec("chown", [spec.user, outDir]).catch(() => {});
+      await chmod(outDir, 0o777);
+      binds.push(`${outDir}:${dirname(spec.outputFile)}:rw`);
     }
 
     const container = await this.docker.createContainer({
@@ -120,9 +142,23 @@ export class DockerGvisorRunner implements SandboxRunner {
       })) as unknown as Buffer;
       const { stdout, stderr } = demux(Buffer.from(raw));
 
+      // A report written to file replaces stdout entirely, so adapters keep a
+      // single parse path. An absent file resolves to empty output rather than
+      // to the log's progress chatter, which could parse into something.
+      let out = stdout;
+      if (spec.outputFile && outDir) {
+        const name = spec.outputFile.slice(spec.outputFile.lastIndexOf("/") + 1);
+        out = await readFile(join(outDir, name), "utf8").catch(() => "");
+        if (out.length > STDOUT_CAP) {
+          out =
+            out.slice(0, STDOUT_CAP) +
+            `\n[bac a sable: rapport tronque a ${STDOUT_CAP} octets]`;
+        }
+      }
+
       return {
         exitCode: waitRes.StatusCode ?? -1,
-        stdout,
+        stdout: out,
         stderr,
         timedOut,
         durationMs: Date.now() - started,
@@ -130,6 +166,7 @@ export class DockerGvisorRunner implements SandboxRunner {
     } finally {
       // One-shot: always destroy the container.
       await container.remove({ force: true }).catch(() => {});
+      if (outDir) await rm(outDir, { recursive: true, force: true }).catch(() => {});
     }
   }
 }

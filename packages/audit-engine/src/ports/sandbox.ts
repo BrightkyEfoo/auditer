@@ -46,6 +46,24 @@ export interface SandboxSpec {
   tmpfsBytes: number;
   /** Run as this uid:gid, never root. */
   user: string; // e.g. "65534:65534"
+
+  /**
+   * Container path the scanner writes its report to, INSTEAD of stdout.
+   *
+   * Not a preference — a necessity for anything that reports more than a page.
+   * The Docker daemon truncates a single log line at 64 KiB, and a compact JSON
+   * report is exactly one line. Measured: semgrep produced 1 086 300 bytes of
+   * SARIF and `docker logs` returned 65 537, cut mid-string. `JSON.parse` threw,
+   * `parse()` returned an empty array, the scan was recorded successful, and the
+   * SAST pillar read clean. Neither the log driver nor the socket-proxy is
+   * responsible: reading the daemon's own socket directly returns the same
+   * 65 537 bytes.
+   *
+   * When set, the runner mounts a writable directory at this path's parent,
+   * reads the file after the container exits, and returns its contents AS
+   * `stdout` — so adapters keep one parse path whichever transport they use.
+   */
+  outputFile?: string;
 }
 
 export interface SandboxResult {

@@ -29,7 +29,10 @@ interface GitleaksFinding {
 
 // Write the JSON report to stdout (the runner captures stdout, not files);
 // gitleaks' own progress logs go to stderr, so stdout stays clean JSON.
-const REPORT_PATH = "/dev/stdout";
+// A real file, not /dev/stdout: the daemon caps a single log line at 64 KiB,
+// and a repository with many leaks produces one long JSON line. The runner
+// mounts this directory and hands the file back as stdout.
+const REPORT_PATH = "/out/gitleaks.json";
 
 export class GitleaksAdapter implements ScannerAdapter {
   readonly id = "gitleaks";
@@ -65,6 +68,7 @@ export class GitleaksAdapter implements ScannerAdapter {
         "--redact",
         "--no-banner",
       ],
+      outputFile: REPORT_PATH,
       workdir: CONTAINER_REPO_PATH,
       mounts: [
         { source: "", target: CONTAINER_REPO_PATH, readOnly: true }, // source filled by worker

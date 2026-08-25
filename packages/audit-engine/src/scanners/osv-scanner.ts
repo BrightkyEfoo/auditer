@@ -60,6 +60,8 @@ const MANIFEST_HINTS = [
   "packages.lock.json",
 ];
 
+const OSV_REPORT = "/out/osv.json";
+
 export class OsvScannerAdapter implements ScannerAdapter {
   readonly id = "osv-scanner";
   readonly pillar = "sca" as const;
@@ -102,10 +104,16 @@ export class OsvScannerAdapter implements ScannerAdapter {
         "scan",
         "--experimental-offline", // no network; match against the mounted DB
         "--experimental-offline-vulnerabilities",
-        "--format=json", // stdout; the runner keeps no files
+        "--format=json",
+        // To a FILE, for the same reason as semgrep: the daemon caps a single
+        // log line at 64 KiB, and this report is one line whose size grows with
+        // the dependency graph — precisely the repositories where it matters.
+        "--output",
+        OSV_REPORT,
         "--recursive",
         CONTAINER_REPO_PATH,
       ],
+      outputFile: OSV_REPORT,
       workdir: CONTAINER_REPO_PATH,
       env: { OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY: "/opt/osv-db" },
       mounts,

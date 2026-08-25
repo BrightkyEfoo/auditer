@@ -62,10 +62,17 @@ export class HadolintAdapter implements ScannerAdapter {
 
   classifyExit(result: SandboxResult): ExitClass {
     if (result.timedOut) return "partial";
+    // A SARIF engine that produced no readable SARIF did not succeed, whatever
+    // its exit code says. This is the generalisation of every silent hole found
+    // so far: an unwritable $HOME, a missing file, a report cut at 64 KiB by the
+    // log driver — all of them ended in exit 0 or 1 with nothing parseable, and
+    // all of them were recorded as a clean pillar. "Output we could not read"
+    // must reach the customer as a gap, never as an absence of findings.
+    if (!hasSarifReport(result.stdout)) return "fail";
     // 0 = clean. 1 = lint issues found, AND 1 = a file could not be read; only
     // the report tells the two apart (normalize/sarif-stdout.ts).
     if (result.exitCode === 0) return "success";
-    if (result.exitCode === 1) return hasSarifReport(result.stdout) ? "success" : "fail";
+    if (result.exitCode === 1) return "success"; // findings found, report present
     return "fail";
   }
 

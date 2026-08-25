@@ -90,8 +90,18 @@ describe("classifyExit — le code 1 ne suffit pas", () => {
       expect(adapter.classifyExit(result(1, SARIF))).toBe("success");
     });
 
-    it(`${name}: code 0 = réussi`, () => {
-      expect(adapter.classifyExit(result(0, ""))).toBe("success");
+    it(`${name}: code 0 AVEC rapport = réussi`, () => {
+      expect(adapter.classifyExit(result(0, SARIF))).toBe("success");
+    });
+
+    it(`${name}: code 0 SANS rapport = échec`, () => {
+      // The generalisation of every silent hole found: an unwritable $HOME, a
+      // missing file, a report cut at 64 KiB by the log driver. All of them
+      // ended in exit 0 with nothing parseable, and all were recorded as a
+      // clean pillar. Output we could not read is a gap, not an absence of
+      // findings.
+      expect(adapter.classifyExit(result(0, ""))).toBe("fail");
+      expect(adapter.classifyExit(result(0, "scanning... done"))).toBe("fail");
     });
   }
 });

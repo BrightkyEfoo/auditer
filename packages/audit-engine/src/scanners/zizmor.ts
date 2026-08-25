@@ -81,13 +81,20 @@ export class ZizmorAdapter implements ScannerAdapter {
 
   classifyExit(result: SandboxResult): ExitClass {
     if (result.timedOut) return "partial";
+    // A SARIF engine that produced no readable SARIF did not succeed, whatever
+    // its exit code says. This is the generalisation of every silent hole found
+    // so far: an unwritable $HOME, a missing file, a report cut at 64 KiB by the
+    // log driver — all of them ended in exit 0 or 1 with nothing parseable, and
+    // all of them were recorded as a clean pillar. "Output we could not read"
+    // must reach the customer as a gap, never as an absence of findings.
+    if (!hasSarifReport(result.stdout)) return "fail";
     // Verified against the pinned image: 0 with findings AND 0 without —
     // `--format=sarif` suppresses the finding-driven exit code, so a non-zero
     // status here always means the tool failed rather than that it found
     // something. 1 is mapped alongside 0 anyway, so a future version that
     // reinstates the finding exit code cannot turn results into a failed scan.
     if (result.exitCode === 0) return "success";
-    if (result.exitCode === 1) return hasSarifReport(result.stdout) ? "success" : "fail";
+    if (result.exitCode === 1) return "success"; // findings found, report present
     // 3 is "no inputs collected". `appliesTo` should have prevented it, so
     // reaching it means the gate and the repository disagree — a real failure,
     // and one that must not be smoothed into an empty clean result.

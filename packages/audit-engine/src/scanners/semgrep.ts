@@ -24,6 +24,8 @@ import { extractSarif, hasSarifReport } from "../normalize/sarif-stdout.js";
  * Language-native scanners (Bandit/gosec/eslint-plugin-security) are layered on
  * in v2 as sibling adapters routed by detected stack.
  */
+const SEMGREP_REPORT = "/out/semgrep.sarif";
+
 export class SemgrepAdapter implements ScannerAdapter {
   readonly id = "semgrep";
   readonly pillar = "sast" as const;
@@ -60,8 +62,16 @@ export class SemgrepAdapter implements ScannerAdapter {
         "--metrics=off",
         "--disable-version-check",
         "--quiet",
+        // Report to a FILE, not to stdout. The daemon truncates a single log
+        // line at 64 KiB and semgrep emits its whole SARIF on one line: 1 086 300
+        // bytes produced, 65 537 read, cut mid-string, parsed to nothing, scan
+        // recorded successful with zero findings. The runner mounts the
+        // directory and returns the file's contents as stdout.
+        "--output",
+        SEMGREP_REPORT,
         CONTAINER_REPO_PATH,
       ],
+      outputFile: SEMGREP_REPORT,
       workdir: CONTAINER_REPO_PATH,
       // semgrep writes a settings file under $HOME and unpacks work into
       // $TMPDIR. With neither set, HOME resolves to `/` and the first write
@@ -85,11 +95,18 @@ export class SemgrepAdapter implements ScannerAdapter {
 
   classifyExit(result: SandboxResult): ExitClass {
     if (result.timedOut) return "partial";
+    // A SARIF engine that produced no readable SARIF did not succeed, whatever
+    // its exit code says. This is the generalisation of every silent hole found
+    // so far: an unwritable $HOME, a missing file, a report cut at 64 KiB by the
+    // log driver — all of them ended in exit 0 or 1 with nothing parseable, and
+    // all of them were recorded as a clean pillar. "Output we could not read"
+    // must reach the customer as a gap, never as an absence of findings.
+    if (!hasSarifReport(result.stdout)) return "fail";
     // semgrep: 0 = clean. 1 means BOTH "findings were found" and "I crashed",
     // so the exit code alone cannot tell them apart — the report can. See
     // normalize/sarif-stdout.ts for what this guard is paying for.
     if (result.exitCode === 0) return "success";
-    if (result.exitCode === 1) return hasSarifReport(result.stdout) ? "success" : "fail";
+    if (result.exitCode === 1) return "success"; // findings found, report present
     return "fail";
   }
 

@@ -13,6 +13,8 @@ import { extractSarif, hasSarifReport } from "../normalize/sarif-stdout.js";
  */
 const IAC_HINTS = /\.(tf|ya?ml|json|hcl)$|Dockerfile|Chart\.ya?ml/i;
 
+const TRIVY_REPORT = "/out/trivy.sarif";
+
 export class TrivyConfigAdapter implements ScannerAdapter {
   readonly id = "trivy-config";
   readonly pillar = "hygiene" as const;
@@ -54,9 +56,17 @@ export class TrivyConfigAdapter implements ScannerAdapter {
         "--format",
         "sarif",
         "--skip-check-update",
-        "--quiet", // keep the progress bar out of the stdout we parse
+        "--quiet", // keep the progress bar out of the report
+        // `--output` is back, and for the opposite reason it was removed. It
+        // was dropped because `parse` read stdout while the flag wrote to the
+        // scratch tmpfs, which the runner discards. The runner now MOUNTS the
+        // output directory and returns the file as stdout — which is also the
+        // only transport that survives a report over 64 KiB.
+        "--output",
+        TRIVY_REPORT,
         CONTAINER_REPO_PATH,
       ],
+      outputFile: TRIVY_REPORT,
       workdir: CONTAINER_REPO_PATH,
       // TRIVY_CACHE_DIR alone was not enough, and the gap was silent. trivy
       // creates a temporary analysis directory under $TMPDIR, which defaults to
@@ -79,10 +89,17 @@ export class TrivyConfigAdapter implements ScannerAdapter {
 
   classifyExit(result: SandboxResult): ExitClass {
     if (result.timedOut) return "partial";
+    // A SARIF engine that produced no readable SARIF did not succeed, whatever
+    // its exit code says. This is the generalisation of every silent hole found
+    // so far: an unwritable $HOME, a missing file, a report cut at 64 KiB by the
+    // log driver — all of them ended in exit 0 or 1 with nothing parseable, and
+    // all of them were recorded as a clean pillar. "Output we could not read"
+    // must reach the customer as a gap, never as an absence of findings.
+    if (!hasSarifReport(result.stdout)) return "fail";
     // 1 is both "misconfigurations found" and "fatal error"; only the report
     // separates them (normalize/sarif-stdout.ts).
     if (result.exitCode === 0) return "success";
-    if (result.exitCode === 1) return hasSarifReport(result.stdout) ? "success" : "fail";
+    if (result.exitCode === 1) return "success"; // findings found, report present
     return "fail";
   }
 
