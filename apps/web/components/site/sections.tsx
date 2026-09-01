@@ -13,7 +13,7 @@ import { Reveal, Parallax } from "@/components/motion";
 export function Engines() {
   const row = [...ENGINES, ...ENGINES];
   return (
-    <section className="border-y border-line bg-void py-7">
+    <section className="border-y border-line bg-void/70 py-7">
       <div className="shell mb-6 flex flex-wrap items-baseline gap-x-4 gap-y-1">
         <span className="label text-acid">Huit moteurs</span>
         <span className="font-mono text-label uppercase text-mute">
@@ -193,7 +193,7 @@ export function Engine() {
  */
 export function Guarantees() {
   return (
-    <section className="section border-t border-line bg-void">
+    <section className="section border-t border-line bg-void/70">
       <div className="shell">
         <Reveal>
           <SectionMark index="05">Ce qu&apos;on vous garantit</SectionMark>

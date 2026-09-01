@@ -1,5 +1,6 @@
 import { ViewTransition, type ReactNode } from "react";
 import { SiteNav } from "@/components/site/nav";
+import { ScanField } from "@/components/site/scan-field";
 import { SiteFooter } from "@/components/site/footer";
 import { getSession } from "@/lib/session";
 import { PILLARS } from "@/lib/content";
@@ -25,15 +26,28 @@ export default async function SiteLayout({ children }: { children: ReactNode }) 
       >
         Aller au contenu
       </a>
+      {/* Le champ de balayage vit derrière TOUT le site vitrine, en position
+          fixe : il traverse les sections au lieu d'appartenir au seul hero.
+          C'est ce qui en fait une animation « le long du scroll » plutôt qu'un
+          fond d'en-tête. `-z-10` le place sous le contenu ; le corps de page
+          porte déjà un fond opaque là où il faut préserver la lisibilité. */}
+      <ScanField />
       <SiteNav authenticated={session !== null} />
       {/* Cross-page transition. The header sits OUTSIDE it and carries its
           own view-transition-name, so it stays put while the content changes —
           an element that slides away and back is the one thing that makes a
           page transition feel unmoored. */}
       <ViewTransition>
-        <main id="contenu">{children}</main>
+        {/* `relative z-10` : sans indice explicite, un bloc non positionné est
+            peint AVANT tout élément positionné — la canvas passerait donc
+            par-dessus le texte. Le nav est déjà en z-50, le footer suit ici. */}
+        <main id="contenu" className="relative z-10">
+          {children}
+        </main>
       </ViewTransition>
-      <SiteFooter />
+      <div className="relative z-10">
+        <SiteFooter />
+      </div>
 
       {/* Structured data. Markup/Meta-data is one of the six sub-scores a
           developer jury actually grades, and it sits between 6.2 and 7.8 on the

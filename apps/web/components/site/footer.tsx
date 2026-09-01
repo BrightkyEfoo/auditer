@@ -42,7 +42,7 @@ const COLUMNS: Array<{ title: string; links: Array<{ href: string; label: string
 
 export function SiteFooter() {
   return (
-    <footer className="border-t border-line bg-void">
+    <footer className="border-t border-line bg-void/80">
       {/* The footer opens with the final call, at poster scale. It is a page,
           not a dump of links. */}
       <div className="shell border-b border-line py-[clamp(4rem,10vh,8rem)]">

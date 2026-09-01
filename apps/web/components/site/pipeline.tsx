@@ -56,7 +56,7 @@ export function Pipeline() {
   }, []);
 
   return (
-    <section id="pipeline" className="section scroll-mt-16 border-t border-line bg-void">
+    <section id="pipeline" className="section scroll-mt-16 border-t border-line bg-void/70">
       <div className="shell grid grid-cols-12 gap-x-8">
         {/* ── Sticky column: the reader's position in the sequence ────── */}
         <div className="col-span-12 lg:col-span-4">
