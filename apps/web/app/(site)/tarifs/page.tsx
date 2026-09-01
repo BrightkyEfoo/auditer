@@ -4,6 +4,7 @@ import { SectionMark, ButtonLink, Chip } from "@/components/ui";
 import { Reveal } from "@/components/motion";
 
 export const metadata: Metadata = {
+  alternates: { canonical: "/tarifs" },
   title: "Tarifs",
   description:
     "auditer est gratuit pendant la phase actuelle : les sept piliers, sans carte bancaire. Ce qui deviendra payant, et quand, est annoncé ici.",

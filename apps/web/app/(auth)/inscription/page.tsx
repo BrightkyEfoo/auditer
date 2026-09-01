@@ -3,6 +3,7 @@ import { CredentialsForm } from "@/components/site/credentials-form";
 import { SectionMark, Label } from "@/components/ui";
 
 export const metadata: Metadata = {
+  alternates: { canonical: "/inscription" },
   title: "Créer un compte",
   description:
     "Créez votre compte auditer et lancez votre premier relevé. Gratuit pendant la phase actuelle, sans carte bancaire.",

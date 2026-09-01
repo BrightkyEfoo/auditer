@@ -3,6 +3,7 @@ import { CredentialsForm } from "@/components/site/credentials-form";
 import { SectionMark } from "@/components/ui";
 
 export const metadata: Metadata = {
+  alternates: { canonical: "/connexion" },
   title: "Connexion",
   description: "Accédez à vos relevés auditer.",
   robots: { index: false, follow: false },

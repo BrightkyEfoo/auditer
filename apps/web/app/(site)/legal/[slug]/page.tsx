@@ -9,6 +9,8 @@ export function generateStaticParams() {
   return LEGAL_SLUGS.map((slug) => ({ slug }));
 }
 
+const SITE = process.env.WEB_URL ?? "https://auditer.brightkyefoo.cm";
+
 export async function generateMetadata({
   params,
 }: {
@@ -20,6 +22,7 @@ export async function generateMetadata({
   return {
     title: doc.title,
     description: doc.summary,
+    alternates: { canonical: `/legal/${slug}` },
     // Legal pages must be indexable and stable, but they are never the entry
     // point we optimise for.
     robots: { index: true, follow: true },
@@ -40,6 +43,42 @@ export default async function LegalPage({ params }: { params: Promise<{ slug: st
     <article className="section">
       <div className="shell grid grid-cols-12 gap-y-12">
         <header className="col-span-12">
+          {/* Fil d'Ariane VISIBLE d'abord, balisé ensuite. Un BreadcrumbList
+              qui décrit un chemin absent de la page est du balisage qui ne
+              correspond pas au contenu — précisément ce que les consignes de
+              Google sanctionnent. Ici les deux disent la même chose. */}
+          <nav aria-label="Fil d'Ariane" className="mb-8">
+            <ol className="flex flex-wrap items-center gap-2 font-mono text-label uppercase text-mute">
+              <li>
+                <Link href="/" className="ul-draw hover:text-mineral">
+                  Accueil
+                </Link>
+              </li>
+              <li aria-hidden>/</li>
+              <li className="text-ash">Légal</li>
+              <li aria-hidden>/</li>
+              {/* `aria-current` : la dernière miette est la page courante, et
+                  n'est donc pas un lien. */}
+              <li aria-current="page" className="text-mineral">
+                {doc.title}
+              </li>
+            </ol>
+          </nav>
+
+          <script
+            type="application/ld+json"
+            dangerouslySetInnerHTML={{
+              __html: JSON.stringify({
+                "@context": "https://schema.org",
+                "@type": "BreadcrumbList",
+                itemListElement: [
+                  { "@type": "ListItem", position: 1, name: "Accueil", item: SITE },
+                  { "@type": "ListItem", position: 2, name: doc.title, item: `${SITE}/legal/${slug}` },
+                ],
+              }).replace(/</g, "\\u003c"),
+            }}
+          />
+
           <Reveal>
             <SectionMark index={doc.index}>Document légal</SectionMark>
             <h1 className="h-xl mt-10 max-w-[20ch]">{doc.title}</h1>

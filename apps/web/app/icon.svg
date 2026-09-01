@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="32" height="32">
+  <!--
+    Favicon — la marque du produit, pas une lettre dans un rond.
+
+    Même géométrie que <Mark /> (components/ui.tsx) : un cadre, une cible
+    pleine, quatre repères de visée. À 16px, la cible centrale reste le seul
+    élément lisible — c'est voulu, elle porte l'identité à elle seule.
+
+    Couleurs codées en dur plutôt qu'en currentColor : un favicon est rendu
+    hors du document, sans CSS ni tokens. Ce sont les valeurs `carbon` et
+    `acid` de tailwind.config.ts, à garder synchronisées à la main.
+  -->
+  <rect width="16" height="16" fill="#0B0E0F" />
+  <rect x="1.5" y="1.5" width="13" height="13" fill="none" stroke="#C6FF4A" stroke-width="1" />
+  <rect x="6.5" y="6.5" width="3" height="3" fill="#C6FF4A" />
+  <path d="M8 1v2.5M8 12.5V15M1 8h2.5M12.5 8H15" stroke="#C6FF4A" stroke-width="1" />
+</svg>

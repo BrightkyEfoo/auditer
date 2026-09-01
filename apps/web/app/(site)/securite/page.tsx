@@ -6,6 +6,7 @@ import { Reveal } from "@/components/motion";
 
 export const metadata: Metadata = {
   title: "Sécurité",
+  alternates: { canonical: "/securite" },
   description:
     "Modèle de menace, isolation des scanners, traitement des données et ce que nous ne prétendons pas. Le détail des mécanismes, pas une page de conformité.",
 };
