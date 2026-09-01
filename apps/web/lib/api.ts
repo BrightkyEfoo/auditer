@@ -133,6 +133,29 @@ export interface Scan {
   createdAt: string;
 }
 
+export interface FindingQuery {
+  severity?: string;
+  triage?: string;
+  pillar?: string;
+  q?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface FindingPage {
+  items: Finding[];
+  /** Nombre de findings correspondant au filtre courant, toutes pages confondues. */
+  total: number;
+  /** Histogramme du relevé, INDÉPENDANT du filtre de sévérité : ce sont les
+   *  compteurs des boutons eux-mêmes, et en sélectionner un ne doit pas mettre
+   *  les autres à zéro. */
+  counts: Record<string, number>;
+  /** Findings non triés du relevé entier. */
+  openCount: number;
+  limit: number;
+  offset: number;
+}
+
 export interface Connection {
   id: string;
   provider: string;
@@ -208,7 +231,22 @@ export const api = {
    */
   cancelAudit: (id: string) =>
     req<{ ok: boolean }>(`/audits/${id}/cancel`, { method: "POST" }),
-  listFindings: (id: string) => req<Finding[]>(`/audits/${id}/findings`),
+  /**
+   * Une PAGE de findings. Le filtre, la recherche et le décompte sont côté
+   * serveur — appliquer une recherche à la seule page visible ferait dire
+   * « aucun résultat » alors que le finding existe deux pages plus loin.
+   */
+  listFindings: (id: string, params: FindingQuery = {}) => {
+    const qs = new URLSearchParams();
+    if (params.severity) qs.set("severity", params.severity);
+    if (params.triage) qs.set("triage", params.triage);
+    if (params.pillar) qs.set("pillar", params.pillar);
+    if (params.q) qs.set("q", params.q);
+    if (params.limit != null) qs.set("limit", String(params.limit));
+    if (params.offset != null) qs.set("offset", String(params.offset));
+    const suffix = qs.toString();
+    return req<FindingPage>(`/audits/${id}/findings${suffix ? `?${suffix}` : ""}`);
+  },
   setTriage: (fingerprint: string, status: string) =>
     req<{ ok: boolean }>("/triage", {
       method: "POST",

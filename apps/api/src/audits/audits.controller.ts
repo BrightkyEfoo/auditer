@@ -92,11 +92,19 @@ export class AuditsController {
     @Query("pillar") pillar?: string,
     @Query("severity") severity?: string,
     @Query("triage") triage?: string,
+    @Query("q") q?: string,
+    @Query("limit") limit?: string,
+    @Query("offset") offset?: string,
   ) {
     return this.audits.listFindings(auth, id, {
       pillar: pillar ? Pillar.parse(pillar) : undefined,
       severity: severity ? Severity.parse(severity) : undefined,
       triage: triage ? TriageStatus.parse(triage) : undefined,
+      q,
+      // Une chaîne absurde rend NaN ; le service le détecte et reprend son
+      // défaut (voir `Number.isFinite` dans listFindings).
+      limit: limit ? Number.parseInt(limit, 10) : undefined,
+      offset: offset ? Number.parseInt(offset, 10) : undefined,
     });
   }
 

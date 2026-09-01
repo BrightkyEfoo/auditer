@@ -25,6 +25,10 @@ const NETWORK_PILLARS: ReadonlySet<Pillar> = new Set(["dast", "ux"]);
 /** Page size of the run list. Deliberately fixed — no client-controlled take. */
 const LIST_LIMIT = 50;
 
+/** Taille de page par défaut des findings. Le client peut la réduire ou
+ *  l'augmenter, jamais au-delà du plafond appliqué dans `listFindings`. */
+const FINDINGS_PAGE_SIZE = 50;
+
 /** Severity histogram of a run. Always all five keys, always a number. */
 export type SeverityCounts = Record<Severity, number>;
 
@@ -254,23 +258,103 @@ export class AuditsService {
     return artifact;
   }
 
+  /**
+   * Une PAGE de findings, avec de quoi afficher honnêtement ce qui n'y est pas.
+   *
+   * La liste rendait auparavant TOUS les findings d'un relevé, et la page en
+   * faisait le tri, la recherche et le décompte côté navigateur. Sur un dépôt
+   * réel cela veut dire quelques milliers de lignes transférées pour en
+   * afficher vingt — et une page qui rame d'autant plus que le relevé a trouvé
+   * de choses, c'est-à-dire exactement quand elle est utile.
+   *
+   * Le filtre et la recherche sont donc remontés ici. Ce n'est pas un détail de
+   * performance : une recherche appliquée à la seule page visible aurait été un
+   * MENSONGE — l'utilisateur aurait lu « aucun résultat » alors que le finding
+   * existait deux pages plus loin.
+   *
+   * `counts` couvre tout le relevé et ignore délibérément le filtre de
+   * sévérité : ce sont les compteurs des boutons de sévérité eux-mêmes, et
+   * cliquer « critical » ne doit pas mettre les quatre autres à zéro.
+   */
   async listFindings(
     auth: AuthContext,
     id: string,
-    filter: { pillar?: Pillar; severity?: string; triage?: string },
+    filter: {
+      pillar?: Pillar;
+      severity?: string;
+      triage?: string;
+      q?: string;
+      limit?: number;
+      offset?: number;
+    },
   ) {
-    return this.prisma.tenant(auth.organizationId, (tx) =>
-      tx.finding.findMany({
-        where: {
-          auditRunId: id,
-          organizationId: auth.organizationId,
-          ...(filter.pillar ? { pillar: filter.pillar } : {}),
-          ...(filter.severity ? { severity: filter.severity as never } : {}),
-          ...(filter.triage ? { triageStatus: filter.triage as never } : {}),
-        },
-        orderBy: [{ severity: "asc" }, { aiPriority: "desc" }],
-      }),
-    );
+    // Bornes dures, jamais dictées par le client : `take` non plafonné est le
+    // chemin le plus court entre un paramètre d'URL et une base à genoux.
+    //
+    // `Number.isFinite` d'abord, et ce n'est pas de la ceinture-bretelles :
+    // `Math.max(NaN, 1)` rend NaN, pas 1. Un `?limit=abc` traverserait donc les
+    // deux bornes intact et arriverait tel quel chez Prisma.
+    const take = Number.isFinite(filter.limit)
+      ? Math.min(Math.max(filter.limit as number, 1), 200)
+      : FINDINGS_PAGE_SIZE;
+    const skip = Number.isFinite(filter.offset) ? Math.max(filter.offset as number, 0) : 0;
+
+    const q = filter.q?.trim();
+    const search = q
+      ? {
+          OR: [
+            { title: { contains: q, mode: "insensitive" as const } },
+            { ruleId: { contains: q, mode: "insensitive" as const } },
+            // `vulnIds` est un tableau : la correspondance y est EXACTE, pas
+            // préfixée. Chercher « CVE-2024 » ne remonte donc rien par ce
+            // chemin, « CVE-2024-1234 » oui. Le dire plutôt que de laisser
+            // croire à une recherche partielle.
+            { vulnIds: { has: q } },
+          ],
+        }
+      : {};
+
+    const base = {
+      auditRunId: id,
+      organizationId: auth.organizationId,
+      ...(filter.pillar ? { pillar: filter.pillar } : {}),
+      ...(filter.triage ? { triageStatus: filter.triage as never } : {}),
+      ...search,
+    };
+    const where = {
+      ...base,
+      ...(filter.severity ? { severity: filter.severity as never } : {}),
+    };
+
+    return this.prisma.tenant(auth.organizationId, async (tx) => {
+      const [items, total, grouped, openCount] = await Promise.all([
+        tx.finding.findMany({
+          where,
+          // `id` en dernier critère : sans départage stable, deux findings de
+          // même sévérité et même priorité peuvent changer d'ordre entre deux
+          // requêtes, et la pagination sauterait ou dupliquerait des lignes.
+          orderBy: [{ severity: "asc" }, { aiPriority: "desc" }, { id: "asc" }],
+          take,
+          skip,
+        }),
+        tx.finding.count({ where }),
+        tx.finding.groupBy({ by: ["severity"], where: base, _count: { _all: true } }),
+        tx.finding.count({
+          where: {
+            auditRunId: id,
+            organizationId: auth.organizationId,
+            triageStatus: "open",
+          },
+        }),
+      ]);
+
+      const counts = emptyCounts();
+      for (const row of grouped) {
+        counts[row.severity as Severity] = row._count._all;
+      }
+
+      return { items, total, counts, openCount, limit: take, offset: skip };
+    });
   }
 
   /** Cancel = flip a Redis flag the worker polls between scans. */

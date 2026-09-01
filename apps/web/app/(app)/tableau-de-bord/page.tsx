@@ -3,6 +3,7 @@ import { PageHead } from "@/components/app/shell";
 import { Trend } from "@/components/app/trend";
 import { RunRow } from "@/components/app/run-row";
 import { ButtonLink, Empty, Label, Readout } from "@/components/ui";
+import { Reveal } from "@/components/motion";
 import { apiGet } from "@/lib/session";
 import { grade, gradeTone, type AuditRunSummary, type Overview } from "@/lib/api";
 
@@ -74,8 +75,11 @@ export default async function DashboardPage() {
         </section>
 
         {/* ── The four counters ──────────────────────────────────────── */}
+        {/* Les quatre compteurs entrent en cascade, dans l'ordre de gravité
+            décroissante — critiques d'abord. Un stagger de 70 ms : au-delà, le
+            décalage se lit comme de la latence plutôt que comme du rythme. */}
         <section className="grid grid-cols-2 gap-px bg-line lg:grid-cols-4">
-          <div className="bg-carbon px-6 py-7 lg:px-10">
+          <Reveal className="bg-carbon px-6 py-7 lg:px-10">
             <Readout
               label="Critiques ouverts"
               value={overview?.openCritical ?? 0}
@@ -83,8 +87,8 @@ export default async function DashboardPage() {
               hint="à corriger d'abord"
               className="border-l-0 pl-0"
             />
-          </div>
-          <div className="bg-carbon px-6 py-7 lg:px-10">
+          </Reveal>
+          <Reveal delay={70} className="bg-carbon px-6 py-7 lg:px-10">
             <Readout
               label="Élevés ouverts"
               value={overview?.openHigh ?? 0}
@@ -92,16 +96,16 @@ export default async function DashboardPage() {
               hint="hors faux positifs triés"
               className="border-l-0 pl-0"
             />
-          </div>
-          <div className="bg-carbon px-6 py-7 lg:px-10">
+          </Reveal>
+          <Reveal delay={140} className="bg-carbon px-6 py-7 lg:px-10">
             <Readout
               label="Dépôts suivis"
               value={overview?.repos ?? 0}
               hint="importés dans l'organisation"
               className="border-l-0 pl-0"
             />
-          </div>
-          <div className="bg-carbon px-6 py-7 lg:px-10">
+          </Reveal>
+          <Reveal delay={210} className="bg-carbon px-6 py-7 lg:px-10">
             <Readout
               label="Score moyen"
               value={overview?.avgScore ?? "—"}
@@ -109,7 +113,7 @@ export default async function DashboardPage() {
               hint={`${overview?.runs ?? 0} relevé(s) au total`}
               className="border-l-0 pl-0"
             />
-          </div>
+          </Reveal>
         </section>
       </div>
 

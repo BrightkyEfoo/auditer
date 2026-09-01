@@ -114,7 +114,11 @@ export function RunTrace({ entries, runId }: { entries: TraceEntry[]; runId: str
         </span>
       </div>
 
-      <ol className="max-h-80 overflow-auto">
+      {/* `data-lenis-prevent` : cette liste a son propre défilement. Sans cet
+          attribut, Lenis capte la molette au niveau du document et c'est la
+          PAGE qui défilerait pendant que la trace reste immobile — le défaut
+          classique du smooth scroll global. */}
+      <ol className="max-h-80 overflow-auto" data-lenis-prevent>
         {entries.map((e, i) => (
           <li
             key={i}

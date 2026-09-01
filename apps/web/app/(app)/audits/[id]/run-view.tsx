@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { PageHead } from "@/components/app/shell";
 import {
@@ -31,11 +31,15 @@ import {
 } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { Deliverables } from "@/components/app/deliverables";
+import { CountUp, Reveal, Scramble } from "@/components/motion";
 import { RunTrace, type TraceEntry } from "@/components/app/run-trace";
 
 const STEPS = ["queued", "cloning", "scanning", "analyzing", "reporting", "done"] as const;
 const TERMINAL = new Set(["done", "completed_with_errors", "failed", "canceled"]);
 const TRIAGE_OPTIONS = ["open", "false_positive", "ignored", "accepted"];
+
+/** Findings par page. Le serveur plafonne à 200 quoi qu'on demande. */
+const PAGE_SIZE = 50;
 
 /** États d'un moteur dont l'issue est connue — ils comptent dans l'avancement. */
 const SCAN_TERMINAL = new Set(["success", "partial", "failed", "skipped"]);
@@ -126,16 +130,65 @@ export function RunView({ runId }: { runId: string }) {
   const [scans, setScans] = useState<Scan[]>([]);
   const [canceling, setCanceling] = useState(false);
   const [findings, setFindings] = useState<Finding[]>([]);
+  const [total, setTotal] = useState(0);
+  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [openCount, setOpenCount] = useState(0);
+  const [offset, setOffset] = useState(0);
   const [sevFilter, setSevFilter] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  // La recherche part au serveur : la débattre évite une requête par frappe.
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [hideTriaged, setHideTriaged] = useState(false);
 
   const refreshFindings = useCallback(() => {
-    api.listFindings(runId).then(setFindings).catch(() => {});
-  }, [runId]);
+    api
+      .listFindings(runId, {
+        severity: sevFilter ?? undefined,
+        // « masquer les triés » se dit au serveur `triage=open` : le filtre est
+        // une égalité, et open est précisément ce qui reste à traiter.
+        triage: hideTriaged ? "open" : undefined,
+        q: debouncedQuery || undefined,
+        limit: PAGE_SIZE,
+        offset,
+      })
+      .then((page) => {
+        setFindings(page.items);
+        setTotal(page.total);
+        setCounts(page.counts);
+        setOpenCount(page.openCount);
+      })
+      .catch(() => {});
+  }, [runId, sevFilter, hideTriaged, debouncedQuery, offset]);
 
   // Les scans persistés sont la trace de référence. On les relit au montage et
   // à la fin du relevé : le direct complète, il ne remplace pas.
+  // `refreshFindings` change d'identité dès qu'un filtre bouge. L'effet SSE
+  // plus bas ne doit PAS en dépendre : il fermerait et rouvrirait le flux à
+  // chaque frappe dans la recherche, avec la reconnexion et le rejeu que cela
+  // implique. On garde donc une référence toujours à jour, que l'effet appelle
+  // sans en dépendre.
+  const refreshFindingsRef = useRef(refreshFindings);
+  refreshFindingsRef.current = refreshFindings;
+
+  // Débattre la saisie : une requête par frappe inonderait l'api pour rien.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(query.trim()), 250);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  // Changer de filtre ou de recherche remet en première page. Sans ça, filtrer
+  // depuis la page 4 afficherait « rien pour ce filtre » sur un jeu de
+  // résultats qui en compte trois.
+  useEffect(() => {
+    setOffset(0);
+  }, [sevFilter, hideTriaged, debouncedQuery]);
+
+  // Toute évolution du filtre, de la recherche ou de la page relit la page
+  // courante — `refreshFindings` porte déjà ces dépendances.
+  useEffect(() => {
+    if (TERMINAL.has(status)) refreshFindings();
+  }, [refreshFindings, status]);
+
   const refreshScans = useCallback(() => {
     api
       .listScans(runId)
@@ -154,7 +207,7 @@ export function RunView({ runId }: { runId: string }) {
       setRun(r);
       setStatus(r.status);
       if (TERMINAL.has(r.status)) {
-        refreshFindings();
+        refreshFindingsRef.current();
       }
     });
 
@@ -184,7 +237,7 @@ export function RunView({ runId }: { runId: string }) {
     es.addEventListener("done", (e) => {
       setStatus(JSON.parse((e as MessageEvent).data).status);
       api.getAudit(runId).then(setRun);
-      refreshFindings();
+      refreshFindingsRef.current();
       // Relire les lignes persistées une dernière fois : elles portent les
       // durées et codes de sortie définitifs.
       refreshScans();
@@ -206,7 +259,7 @@ export function RunView({ runId }: { runId: string }) {
       // Rien : la reconnexion est prise en charge par le navigateur.
     };
     return () => es.close();
-  }, [runId, refreshFindings, refreshScans]);
+  }, [runId, refreshScans]);
 
   async function triage(f: Finding, s: string) {
     // Optimistic: triage is org-scoped and keyed on the fingerprint, so the
@@ -214,31 +267,14 @@ export function RunView({ runId }: { runId: string }) {
     setFindings((cur) =>
       cur.map((x) => (x.fingerprint === f.fingerprint ? { ...x, triageStatus: s } : x)),
     );
-    await api.setTriage(f.fingerprint, s).catch(() => refreshFindings());
+    await api.setTriage(f.fingerprint, s).catch(() => refreshFindingsRef.current());
   }
 
 
-  const counts = useMemo(
-    () =>
-      SEVERITIES.reduce(
-        (acc, s) => ({ ...acc, [s]: findings.filter((f) => f.severity === s).length }),
-        {} as Record<string, number>,
-      ),
-    [findings],
-  );
-  const openCount = findings.filter((f) => f.triageStatus === "open").length;
-
-  const shown = findings.filter((f) => {
-    if (sevFilter && f.severity !== sevFilter) return false;
-    if (hideTriaged && f.triageStatus !== "open") return false;
-    const q = query.trim().toLowerCase();
-    if (!q) return true;
-    return (
-      f.title.toLowerCase().includes(q) ||
-      f.ruleId.toLowerCase().includes(q) ||
-      f.vulnIds.some((v) => v.toLowerCase().includes(q))
-    );
-  });
+  // `findings` EST la page courante : le filtrage et la recherche ont été
+  // remontés au serveur, il n'y a plus rien à trier ici.
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const pageIndex = Math.floor(offset / PAGE_SIZE);
 
   const running = !TERMINAL.has(status);
 
@@ -289,7 +325,11 @@ export function RunView({ runId }: { runId: string }) {
       {/* ── Progress ───────────────────────────────────────────────────── */}
       <section className="border-b border-line px-6 py-7 lg:px-10">
         {percent !== null && (
-          <div className="mb-7">
+          // `ticked` : les repères d'angle du système, réservés aux blocs qui
+          // portent le plus de poids. L'avancement d'un relevé en cours en
+          // fait partie — c'est la seule chose que le lecteur regarde pendant
+          // qu'il attend.
+          <div className="ticked mb-7 border border-line p-5">
             <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2">
               <div className="flex items-end gap-4">
                 <span
@@ -298,11 +338,16 @@ export function RunView({ runId }: { runId: string }) {
                     running ? "text-acid" : "text-mineral",
                   )}
                 >
-                  {percent}
+                  {/* Un nombre qui compte se lit comme une mesure qu'on prend ;
+                      un nombre posé se lit comme une image. `CountUp` respecte
+                      déjà `prefers-reduced-motion` en affichant la valeur
+                      finale sans animer. */}
+                  <CountUp to={percent} />
                   <span className="text-[0.4em] align-super">%</span>
                 </span>
                 <p className="pb-2 font-mono text-data text-mute">
-                  {engineDone} moteur{engineDone > 1 ? "s" : ""} sur {engineTotal}
+                  <Scramble text={`${engineDone} / ${engineTotal}`} /> moteur
+                  {engineDone > 1 ? "s" : ""}
                 </p>
               </div>
               {canceling && running && (
@@ -381,8 +426,11 @@ export function RunView({ runId }: { runId: string }) {
 
       {/* ── Score ──────────────────────────────────────────────────────── */}
       {run?.riskScore != null && (
-        <section className="grid grid-cols-12 items-end gap-y-8 border-b border-line px-6 py-9 lg:px-10">
-          <div className="col-span-12 lg:col-span-4">
+        // `ruled` : la grille 12 colonnes devient visible derrière le seul bloc
+        // qui domine la page. C'est la rupture de rythme qui manquait au
+        // produit — la vitrine l'avait, les écrans de travail non.
+        <section className="ruled grid grid-cols-12 items-end gap-y-8 border-b border-line px-6 py-9 lg:px-10">
+          <Reveal className="col-span-12 lg:col-span-4">
             <Label className="text-mute">Score du relevé</Label>
             <div className="mt-4 flex items-end gap-5">
               <span
@@ -400,9 +448,12 @@ export function RunView({ runId }: { runId: string }) {
                 <p className="mt-1 font-mono text-label uppercase text-mute">sur 100</p>
               </div>
             </div>
-          </div>
+          </Reveal>
 
-          <div className="col-span-12 lg:col-span-7 lg:col-start-6">
+          {/* 90 ms de décalage : les deux colonnes entrent dans l'ordre de
+              lecture — le score, puis sa décomposition — au lieu d'apparaître
+              ensemble. C'est le pas de stagger du système. */}
+          <Reveal delay={90} className="col-span-12 lg:col-span-7 lg:col-start-6">
             <Label className="text-mute">Répartition par gravité</Label>
             <div className="mt-4 space-y-2.5">
               {SEVERITIES.map((s) => {
@@ -429,7 +480,7 @@ export function RunView({ runId }: { runId: string }) {
                 Plafond appliqué — {counts.critical} critique(s) ouvert(s) forcent la note F
               </p>
             )}
-          </div>
+          </Reveal>
         </section>
       )}
 
@@ -437,16 +488,16 @@ export function RunView({ runId }: { runId: string }) {
       <section className="px-6 py-8 lg:px-10">
         <div className="flex flex-wrap items-baseline justify-between gap-4">
           <h2 className="h-md">
-            Findings <span className="font-mono text-lede text-mute">({findings.length})</span>
+            Findings <span className="font-mono text-lede text-mute">({total})</span>
           </h2>
           <p className="font-mono text-label uppercase text-mute">
-            {openCount} ouvert(s) · {findings.length - openCount} trié(s)
+            {openCount} ouvert(s) sur ce relevé
           </p>
         </div>
 
         <div className="mt-6 flex flex-wrap items-center gap-2">
           <FilterChip active={sevFilter === null} onClick={() => setSevFilter(null)}>
-            toutes ({findings.length})
+            toutes ({SEVERITIES.reduce((n, s) => n + (counts[s] ?? 0), 0)})
           </FilterChip>
           {SEVERITIES.map((s) => (
             <FilterChip
@@ -471,12 +522,12 @@ export function RunView({ runId }: { runId: string }) {
         </div>
 
         <div className="mt-6">
-          {shown.length === 0 ? (
+          {findings.length === 0 ? (
             running ? (
               <p className="border border-dashed border-line px-5 py-10 text-center font-mono text-label uppercase text-mute">
                 analyse en cours — les findings apparaissent au fil des moteurs
               </p>
-            ) : findings.length === 0 ? (
+            ) : total === 0 && !sevFilter && !hideTriaged && !debouncedQuery ? (
               <Empty
                 title="Aucun finding"
                 body="Les moteurs sélectionnés n'ont rien relevé sur ce commit. Ce n'est pas une preuve d'absence de faille : c'est l'absence de détection par ces moteurs, à cette date."
@@ -485,11 +536,48 @@ export function RunView({ runId }: { runId: string }) {
               <Empty title="Rien pour ce filtre" body="Élargissez la sélection de gravité ou videz la recherche." />
             )
           ) : (
-            <ul className="border-t border-line">
-              {shown.map((f) => (
-                <FindingRow key={f.id} f={f} onTriage={triage} />
-              ))}
-            </ul>
+            <>
+              <ul className="border-t border-line">
+                {findings.map((f) => (
+                  <FindingRow key={f.id} f={f} onTriage={triage} />
+                ))}
+              </ul>
+
+              {pageCount > 1 && (
+                <nav
+                  aria-label="Pagination des findings"
+                  className="mt-6 flex flex-wrap items-center justify-between gap-4 border-t border-line pt-5"
+                >
+                  {/* Dire QUELLES lignes sont à l'écran, pas seulement le numéro
+                      de page : « 51–100 sur 342 » situe le lecteur, « page 2 »
+                      le laisse compter. */}
+                  <p className="font-mono text-label uppercase text-mute">
+                    {offset + 1}–{Math.min(offset + findings.length, total)} sur {total}
+                  </p>
+                  <div className="flex items-center gap-3">
+                    <Button
+                      variant="quiet"
+                      size="sm"
+                      disabled={pageIndex === 0}
+                      onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+                    >
+                      Précédents
+                    </Button>
+                    <span className="font-mono text-label uppercase text-mute">
+                      page {pageIndex + 1} / {pageCount}
+                    </span>
+                    <Button
+                      variant="quiet"
+                      size="sm"
+                      disabled={pageIndex >= pageCount - 1}
+                      onClick={() => setOffset(offset + PAGE_SIZE)}
+                    >
+                      Suivants
+                    </Button>
+                  </div>
+                </nav>
+              )}
+            </>
           )}
         </div>
       </section>
@@ -582,13 +670,19 @@ function FindingRow({ f, onTriage }: { f: Finding; onTriage: (f: Finding, s: str
   const triaged = f.triageStatus !== "open";
 
   return (
-    <li className={cn("border-b border-line", triaged && "opacity-45")}>
+    <li className={cn("relative border-b border-line", triaged && "opacity-45")}>
       <button
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
-        className="group flex w-full items-center gap-4 py-4 text-left transition-colors duration-[180ms] hover:bg-slate/60"
+        className="group relative flex w-full items-center gap-4 py-4 pl-3 text-left transition-colors duration-[180ms] hover:bg-slate/60"
       >
-        <SevMark severity={f.severity} />
+        {/* Le rail du système, pas un survol inventé pour l'occasion : la même
+            gestuelle que les lignes de la vitrine. Le vocabulaire de motion
+            existait, il ne franchissait pas la porte du produit. */}
+        <span aria-hidden className="row-mark" />
+        <span className="idx-shift">
+          <SevMark severity={f.severity} />
+        </span>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-data text-mineral">{f.title}</span>
           <span className="mt-1 block font-mono text-label uppercase text-mute">
