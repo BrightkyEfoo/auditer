@@ -27,7 +27,7 @@ const LIST_LIMIT = 50;
 
 /** Taille de page par défaut des findings. Le client peut la réduire ou
  *  l'augmenter, jamais au-delà du plafond appliqué dans `listFindings`. */
-const FINDINGS_PAGE_SIZE = 50;
+const FINDINGS_PAGE_SIZE = 25;
 
 /** Severity histogram of a run. Always all five keys, always a number. */
 export type SeverityCounts = Record<Severity, number>;

@@ -32,6 +32,7 @@ import {
 import { cn } from "@/lib/cn";
 import { Deliverables } from "@/components/app/deliverables";
 import { CountUp, Reveal, Scramble } from "@/components/motion";
+import { FindingProse } from "@/components/app/finding-prose";
 import { RunTrace, type TraceEntry } from "@/components/app/run-trace";
 
 const STEPS = ["queued", "cloning", "scanning", "analyzing", "reporting", "done"] as const;
@@ -39,7 +40,7 @@ const TERMINAL = new Set(["done", "completed_with_errors", "failed", "canceled"]
 const TRIAGE_OPTIONS = ["open", "false_positive", "ignored", "accepted"];
 
 /** Findings par page. Le serveur plafonne à 200 quoi qu'on demande. */
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 25;
 
 /** États d'un moteur dont l'issue est connue — ils comptent dans l'avancement. */
 const SCAN_TERMINAL = new Set(["success", "partial", "failed", "skipped"]);
@@ -707,7 +708,7 @@ function FindingRow({ f, onTriage }: { f: Finding; onTriage: (f: Finding, s: str
 
       {open && (
         <div className="space-y-5 border-t border-line px-0 pb-7 pt-5 sm:pl-6">
-          <p className="max-w-[80ch] text-data text-ash">{f.description}</p>
+          <FindingProse text={f.description} />
 
           {f.cwe.length > 0 && (
             <div className="flex flex-wrap gap-2">
@@ -720,7 +721,11 @@ function FindingRow({ f, onTriage }: { f: Finding; onTriage: (f: Finding, s: str
           {f.evidence && (
             <div>
               <Label className="text-mute">Preuve — caviardée</Label>
-              <pre className="mt-2 overflow-x-auto border border-line bg-void p-3 font-mono text-label text-ash">
+              {/* `text-data` et non `text-label` : ce dernier porte 0.12em
+                  d'interlettrage et une hauteur de ligne de 1 — réglages
+                  d'étiquette, qui sur du code désalignent les colonnes et
+                  collent les lignes les unes aux autres. */}
+              <pre className="mt-2 overflow-x-auto border border-line bg-void p-3 font-mono text-data leading-relaxed text-ash">
                 {f.evidence}
               </pre>
             </div>
@@ -737,12 +742,12 @@ function FindingRow({ f, onTriage }: { f: Finding; onTriage: (f: Finding, s: str
                 )}
                 {f.aiNeedsHuman && <Chip tone="warn">revue humaine conseillée</Chip>}
               </div>
-              <p className="mt-3 max-w-[80ch] text-data text-ash">{f.aiExplanation}</p>
+              <FindingProse text={f.aiExplanation} className="mt-3" />
               {f.aiRemediation && (
-                <p className="mt-3 max-w-[80ch] text-data text-mineral">
-                  <span className="text-acid">Correctif — </span>
-                  {f.aiRemediation}
-                </p>
+                <div className="mt-4">
+                  <Label className="text-acid">Correctif</Label>
+                  <FindingProse text={f.aiRemediation} tone="mineral" className="mt-2" />
+                </div>
               )}
               <p className="mt-4 font-mono text-label uppercase text-mute">
                 Texte rédigé par un modèle à partir de la sortie du moteur. Le score, lui, est
