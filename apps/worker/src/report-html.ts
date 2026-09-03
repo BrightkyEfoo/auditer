@@ -1,4 +1,5 @@
-import type { ExecutiveSummary, Severity } from "@auditer/types";
+import type { ExecutiveSummary, Severity, Grade } from "@auditer/types";
+import { GRADE_BANDS } from "@auditer/types";
 
 /**
  * Builds a self-contained, print-ready HTML audit report.
@@ -161,6 +162,29 @@ function esc(s: string): string {
   );
 }
 
+/**
+ * Why the letter can be worse than the number.
+ *
+ * A single open Critical caps the grade at F regardless of the deduction total,
+ * so a report can legitimately read "85 sur 100 · note F". Printed side by side
+ * with no explanation that looks like a contradiction, and a reader who spots a
+ * contradiction stops trusting the rest of the page — the opposite of what a
+ * severity ceiling is for. The number answers "how much is wrong", the letter
+ * answers "is any of it disqualifying"; they are different questions and the
+ * report has to say so where they disagree.
+ */
+function ceilingNote(score: number, grade: string | undefined): string {
+  if (!grade) return "";
+  const fromScore = GRADE_BANDS.find((b) => score >= b.min)?.grade ?? "F";
+  const order: Grade[] = ["A", "B", "C", "D", "F"];
+  if (order.indexOf(grade as Grade) <= order.indexOf(fromScore)) return "";
+  return `<p class="kv">Le score de ${score} mesure le VOLUME de ce qui a été trouvé, pondéré par la taille du dépôt. La note ${esc(
+    grade,
+  )} est plafonnée par la gravité : un finding critique encore ouvert disqualifie le relevé quel que soit le total. Sans ce plafond la note serait ${esc(
+    fromScore,
+  )}.</p>`;
+}
+
 function fmtDate(iso: string | null | undefined): string {
   if (!iso) return "non déclaré";
   const d = new Date(iso);
@@ -277,7 +301,7 @@ ${
   r.riskScore != null
     ? `<div class="score"><span class="n">${r.riskScore}</span><span>sur 100${
         r.summary ? ` · note ${esc(r.summary.overallGrade)}` : ""
-      }</span></div>`
+      }</span></div>${ceilingNote(r.riskScore, r.summary?.overallGrade)}`
     : `<div class="warn"><span class="lbl">Aucun score</span><br>Aucun pilier n'a pu être mesuré : les moteurs demandés n'ont pas abouti. Un relevé sans mesure ne vaut pas un relevé propre — la section « Méthodologie et couverture » nomme chaque moteur et la raison de son arrêt.</div>`
 }
 <div style="display:flex;width:100%;margin:2mm 0">${bar || '<span class="lbl">aucun finding</span>'}</div>
