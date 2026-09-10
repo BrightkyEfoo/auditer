@@ -75,6 +75,13 @@ if [ "$init_status" -ne 0 ]; then
   # autre conteneur.
   creds=/bootstrap/credentials.txt
   umask 077
+  # L'écriture DOIT réussir : sans elle le coffre reste initialisé et scellé,
+  # sans que personne ne détienne la clé de descellement — un coffre neuf qu'on
+  # ne pourra plus jamais ouvrir. C'est arrivé une fois, en « Permission
+  # denied », le conteneur ne tournant pas en root ; d'où le `user: "0:0"` dans
+  # le compose et ce garde-fou.
+  : > "$creds" 2>/dev/null || fatal \
+    "coffre initialisé mais $creds non inscriptible — clé de descellement PERDUE, détruire le volume et recommencer"
   {
     echo "# Généré le $(date -u +%Y-%m-%dT%H:%M:%SZ) par openbao/bootstrap.sh."
     echo "# À reporter en secrets du dépôt GitHub, puis à SUPPRIMER ce fichier."

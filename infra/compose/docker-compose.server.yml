@@ -116,6 +116,14 @@ services:
   openbao-init:
     image: openbao/openbao:2.6.2@sha256:11fd73a2102cda9c55d5d881a8c3210303146a7ec1e8ac76f526e175c6d24641
     depends_on: [openbao]
+    # root, et uniquement pour pouvoir écrire le fichier d'amorçage sur son
+    # volume : l'image tourne sous l'utilisateur `openbao`, qui ne possède pas
+    # un volume vierge — l'écriture échouait en « Permission denied » APRÈS
+    # l'initialisation, c'est-à-dire au seul moment où la clé de descellement
+    # existe. Le coffre restait initialisé et scellé, sans que personne ne
+    # détienne de quoi l'ouvrir. Ce conteneur ne sert qu'à desceller et à créer
+    # la clé transit ; il ne monte pas le stockage du coffre.
+    user: "0:0"
     environment:
       BAO_ADDR: http://openbao:8200
       BAO_TOKEN: "${OPENBAO_TOKEN:-}"
