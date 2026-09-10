@@ -115,7 +115,18 @@ export class LocalKek implements Kek {
   constructor(keyMaterial?: string) {
     const raw = keyMaterial ?? process.env.LOCAL_KEK ?? "";
     if (raw.length < 32) {
-      // Deterministic dev key so restarts can still decrypt. Loudly unsafe.
+      // The fallback key is a CONSTANT compiled into this file, so anyone
+      // holding a database copy can decrypt every token in it. Harmless in
+      // development, and a breach in production — where the published privacy
+      // policy states that a copy of the database is not enough to read the
+      // tokens. Refusing here is what keeps that sentence true.
+      if (process.env.NODE_ENV === "production") {
+        throw new Error(
+          "crypto: aucune clé de chiffrement configurée en production — " +
+            "renseigner OPENBAO_ADDR/OPENBAO_TOKEN, ou LOCAL_KEK (32 octets minimum). " +
+            "Le repli de développement utilise une clé publique et n'est pas utilisable ici.",
+        );
+      }
       // eslint-disable-next-line no-console
       console.warn("[crypto] LocalKek in use — DEV ONLY, no vault boundary.");
       this.key = Buffer.alloc(32, "auditer-dev-kek-not-for-production!!");
@@ -158,6 +169,16 @@ export function kekFromEnv(): Kek {
   const token = process.env.OPENBAO_TOKEN;
   const keyName = process.env.OPENBAO_TRANSIT_KEY ?? "auditer-kek";
   if (addr && token) return new TransitKek(addr, token, keyName);
+  // A vault ADDRESS without a token is a misconfiguration, not a request for
+  // the local fallback: silently downgrading would seal production tokens with
+  // a key that ships in this repository, and nothing would say so until someone
+  // read the ciphertexts. Fail where the mistake is, at startup.
+  if (addr && !token) {
+    throw new Error(
+      "crypto: OPENBAO_ADDR est défini mais OPENBAO_TOKEN est vide — " +
+        "le coffre est inutilisable et le repli local est refusé.",
+    );
+  }
   return new LocalKek();
 }
 

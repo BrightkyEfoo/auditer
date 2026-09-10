@@ -78,34 +78,56 @@ services:
       mc alias set local http://minio:9000 minioadmin minioadmin &&
       mc mb --ignore-existing local/auditer && echo bucket-ready"
 
+  # Coffre des clés de chiffrement des jetons VCS.
+  #
+  # STOCKAGE FICHIER, sur un volume nommé. Il tournait en `server -dev`, dont le
+  # stockage est en mémoire : la KEK mourait avec le conteneur, et tout jeton
+  # scellé avant devenait illisible. Mesuré — jeton GitLab scellé le 2026-08-25,
+  # conteneur recréé le 2026-09-02, puis `cipher: message authentication failed`
+  # à chaque appel, pendant huit jours. Ce n'est pas une panne rare : c'est la
+  # garantie que chaque reboot de l'hôte déconnecte tous les comptes.
+  #
+  # Le volume est NOMMÉ, pas anonyme. Les volumes anonymes que l'image déclare
+  # étaient déjà là et ne servaient à rien : `docker compose up` en recrée de
+  # neufs à chaque recréation du conteneur.
+  #
+  # Image épinglée par digest comme les images de scanners : `latest` sur le
+  # dépôt d'un coffre, c'est accepter qu'une montée de version majeure arrive
+  # sans que personne la décide.
   openbao:
     restart: unless-stopped
-    image: openbao/openbao:latest
+    image: openbao/openbao:2.6.2@sha256:11fd73a2102cda9c55d5d881a8c3210303146a7ec1e8ac76f526e175c6d24641
     cap_add: ["IPC_LOCK"]
+    volumes: ["openbao:/openbao/file"]
     environment:
-      BAO_DEV_ROOT_TOKEN_ID: dev-root-token
-      BAO_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
-    command: ["server", "-dev"]
+      # `disable_mlock` : le verrouillage mémoire demande une capacité que le
+      # conteneur n'a pas toujours, et son absence empêche le démarrage.
+      BAO_LOCAL_CONFIG: |
+        storage "file" { path = "/openbao/file" }
+        listener "tcp" { address = "0.0.0.0:8200" tls_disable = true }
+        disable_mlock = true
+        api_addr = "http://openbao:8200"
+    command: ["server"]
 
-  # Amorce du moteur transit. `server -dev` n'active QUE le moteur kv : sans
-  # cette étape, /v1/transit/encrypt/<clé> répond 404 et packages/crypto lève
-  # sur le premier seal(). Le flux GitHub ne stocke aucun secret, donc rien ne
-  # franchissait ce chemin ; la connexion GitLab, elle, chiffre un jeton de
-  # rafraîchissement et mourait en 500 au callback.
-  #
-  # Idempotent : `secrets enable` échoue si déjà activé (avalé), `write -f` sur
-  # une clé existante est un no-op. api et worker attendent sa sortie en 0.
+  # Descelle le coffre et amorce le moteur transit, à chaque démarrage.
+  # api et worker attendent sa sortie en 0 : un coffre scellé doit empêcher le
+  # démarrage, pas produire des 500 au premier appel d'un utilisateur.
+  # Le détail et le compromis assumé sont dans openbao/bootstrap.sh.
   openbao-init:
-    image: openbao/openbao:latest
+    image: openbao/openbao:2.6.2@sha256:11fd73a2102cda9c55d5d881a8c3210303146a7ec1e8ac76f526e175c6d24641
     depends_on: [openbao]
     environment:
       BAO_ADDR: http://openbao:8200
-      BAO_TOKEN: dev-root-token
-    entrypoint: >
-      /bin/sh -c "until bao status >/dev/null 2>&1; do sleep 1; done;
-      bao secrets enable transit >/dev/null 2>&1 || true;
-      bao write -f transit/keys/${OPENBAO_TRANSIT_KEY:-auditer-kek} >/dev/null &&
-      echo transit-ready"
+      BAO_TOKEN: "${OPENBAO_TOKEN:-}"
+      OPENBAO_UNSEAL_KEY: "${OPENBAO_UNSEAL_KEY:-}"
+      OPENBAO_TRANSIT_KEY: "${OPENBAO_TRANSIT_KEY:-auditer-kek}"
+    volumes:
+      - "./openbao/bootstrap.sh:/bootstrap.sh:ro"
+      # Volume À PART du stockage du coffre : c'est là qu'atterrissent, une
+      # seule fois, les identifiants produits à l'initialisation. Le stockage du
+      # coffre lui-même n'est monté nulle part ailleurs.
+      - "openbao-bootstrap:/bootstrap"
+    entrypoint: ["/bin/sh", "/bootstrap.sh"]
 
   # Squid mourait au démarrage sur :
   #
@@ -158,7 +180,7 @@ services:
       S3_SECRET_KEY: minioadmin
       S3_BUCKET: auditer
       OPENBAO_ADDR: http://openbao:8200
-      OPENBAO_TOKEN: dev-root-token
+      OPENBAO_TOKEN: "${OPENBAO_TOKEN:-}"
       # MÊME variable que celle qui crée la clé dans openbao-init : un écart ici
       # se manifeste par un 404 transit à l'exécution, pas au démarrage.
       OPENBAO_TRANSIT_KEY: "${OPENBAO_TRANSIT_KEY:-auditer-kek}"
@@ -353,3 +375,8 @@ volumes:
   pg:
   valkey:
   minio:
+  # Stockage du coffre. NE PAS SUPPRIMER : le perdre rend illisible tout jeton
+  # VCS déjà chiffré, et oblige chaque utilisateur à reconnecter son compte.
+  openbao:
+  # Dépôt unique des identifiants d'amorçage, à vider une fois reportés.
+  openbao-bootstrap:

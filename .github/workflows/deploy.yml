@@ -48,6 +48,14 @@ jobs:
           OSV_DB_DIR=${{ vars.OSV_DB_DIR }}
           VULN_FEEDS_DIR=${{ vars.VULN_FEEDS_DIR }}
           SANDBOX_RUNTIME=${{ vars.SANDBOX_RUNTIME }}
+          # Coffre OpenBao. Les deux valeurs sont produites UNE FOIS par
+          # infra/compose/openbao/bootstrap.sh au premier déploiement : il
+          # initialise le coffre, les affiche et échoue volontairement tant
+          # qu'elles ne sont pas ici. Sans elles le coffre reste scellé, et
+          # api/worker refusent de démarrer plutôt que de chiffrer avec une clé
+          # de repli connue de tous.
+          OPENBAO_TOKEN=${{ secrets.OPENBAO_TOKEN }}
+          OPENBAO_UNSEAL_KEY=${{ secrets.OPENBAO_UNSEAL_KEY }}
           AUTH_DEV_HEADERS=${{ vars.AUTH_DEV_HEADERS }}
           BETTER_AUTH_SECRET=${{ secrets.BETTER_AUTH_SECRET }}
           ADMIN_PURGE_TOKEN=${{ secrets.ADMIN_PURGE_TOKEN }}
