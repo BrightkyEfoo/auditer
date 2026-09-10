@@ -15,6 +15,20 @@ const PROVIDER_FR: Record<string, string> = {
 };
 
 /**
+ * Un état de connexion se lit par un humain, pas par un parseur.
+ *
+ * `reauth_required` est posé quand le secret enregistré n'est plus déchiffrable
+ * — la clé qui l'enveloppait a disparu. Aucune reprise n'y changera rien, seule
+ * une reconnexion répare, et l'écran doit donc le dire plutôt que d'afficher un
+ * identifiant technique à côté d'un bouton qui échouera.
+ */
+const STATUS_FR: Record<string, string> = {
+  active: "active",
+  reauth_required: "à reconnecter — secret illisible",
+  revoked: "révoquée",
+};
+
+/**
  * The working page: connect a provider, import repositories, configure and
  * launch a run. Kept as one screen because it is one task — splitting it across
  * routes would turn a four-minute job into four navigations.
@@ -262,13 +276,30 @@ export default function ReposPage() {
                         {c.externalAccountId ? ` · ${c.externalAccountId}` : ""}
                       </p>
                       <p className="mt-0.5 font-mono text-label uppercase text-mute">
-                        état : {c.status}
+                        état : {STATUS_FR[c.status] ?? c.status}
                       </p>
                     </div>
                   </div>
-                  <Button size="sm" onClick={() => browse(c)}>
-                    Parcourir les dépôts
-                  </Button>
+                  {/* Une connexion dont le secret n'est plus déchiffrable ne
+                      peut RIEN faire : proposer « Parcourir » renverrait une
+                      erreur. On propose la seule action qui la répare. */}
+                  {c.status === "reauth_required" ? (
+                    <ButtonLink
+                      href={
+                        c.provider === "gitlab"
+                          ? "/api/connections/gitlab/connect"
+                          : "/api/connections/github/install"
+                      }
+                      size="sm"
+                      variant="primary"
+                    >
+                      Reconnecter
+                    </ButtonLink>
+                  ) : (
+                    <Button size="sm" onClick={() => browse(c)}>
+                      Parcourir les dépôts
+                    </Button>
+                  )}
                 </li>
               ))}
             </ul>

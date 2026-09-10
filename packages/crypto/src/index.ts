@@ -20,6 +20,28 @@ import {
 
 const VERSION = "v1";
 
+/**
+ * The secret cannot be decrypted, and no retry will change that.
+ *
+ * Kept apart from a transient vault failure ON PURPOSE, because the two demand
+ * opposite reactions: an unreachable vault must be retried and must NOT touch
+ * stored data, while a ciphertext the key can no longer open is dead and the
+ * connection holding it has to be marked for re-authentication. Conflating them
+ * either deletes a working secret during an outage, or retries a dead one every
+ * twenty seconds forever — which is what the api did, one stack trace per call.
+ *
+ * Cause seen in production: OpenBao ran with `server -dev`, whose storage is in
+ * MEMORY. The container was recreated on 2026-09-02 and every KEK died with it,
+ * so a GitLab refresh token sealed on 2026-08-25 became permanently unreadable.
+ */
+export class SecretUnrecoverableError extends Error {
+  readonly unrecoverable = true as const;
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "SecretUnrecoverableError";
+  }
+}
+
 export interface Kek {
   /** Wrap (encrypt) a raw DEK. Returns an opaque token. */
   wrap(dek: Buffer): Promise<string>;
@@ -58,10 +80,29 @@ export class TransitKek implements Kek {
   }
 
   async unwrap(wrapped: string): Promise<Buffer> {
-    const out = await this.call(`decrypt/${this.keyName}`, {
-      ciphertext: wrapped,
+    const res = await fetch(`${this.addr}/v1/transit/decrypt/${this.keyName}`, {
+      method: "POST",
+      headers: { "X-Vault-Token": this.token, "content-type": "application/json" },
+      body: JSON.stringify({ ciphertext: wrapped }),
     });
-    return Buffer.from(out.data.plaintext as string, "base64");
+    if (res.status === 400) {
+      // Transit answers 400 only when the ciphertext does not verify against the
+      // key — a different key, a rotated-and-destroyed version, or a corrupt
+      // value. `cipher: message authentication failed`. None of those improve
+      // with time, so this is reported as final rather than retried.
+      throw new SecretUnrecoverableError(
+        `transit decrypt/${this.keyName}: le chiffré ne correspond pas à la clé (${(await res.text()).slice(0, 200)})`,
+      );
+    }
+    if (!res.ok) {
+      // 403 sealed, 404 key absent, 5xx, connection refused: the vault is
+      // unavailable or misconfigured. The secret may be perfectly fine.
+      throw new Error(
+        `transit decrypt/${this.keyName} failed: ${res.status} ${await res.text()}`,
+      );
+    }
+    const out = (await res.json()) as { data: { plaintext: string } };
+    return Buffer.from(out.data.plaintext, "base64");
   }
 }
 
@@ -91,14 +132,24 @@ export class LocalKek implements Kek {
   }
   async unwrap(wrapped: string): Promise<Buffer> {
     const [, ivB, tagB, ctB] = wrapped.split(":");
-    if (!ivB || !tagB || !ctB) throw new Error("crypto: malformed local wrap");
+    if (!ivB || !tagB || !ctB) {
+      throw new SecretUnrecoverableError("crypto: enveloppe locale malformée");
+    }
     const d = createDecipheriv(
       "aes-256-gcm",
       this.key,
       Buffer.from(ivB, "base64"),
     );
     d.setAuthTag(Buffer.from(tagB, "base64"));
-    return Buffer.concat([d.update(Buffer.from(ctB, "base64")), d.final()]);
+    try {
+      return Buffer.concat([d.update(Buffer.from(ctB, "base64")), d.final()]);
+    } catch (err) {
+      // GCM authentication failure — the key changed. Final, like Transit's 400.
+      throw new SecretUnrecoverableError(
+        "crypto: le chiffré ne correspond pas à la clé locale",
+        { cause: err },
+      );
+    }
   }
 }
 
@@ -131,13 +182,27 @@ export async function seal(kek: Kek, plaintext: string): Promise<string> {
 export async function open(kek: Kek, sealed: string): Promise<string> {
   const [v, wrappedB, ivB, tagB, ctB] = sealed.split(":");
   if (v !== VERSION || !wrappedB || !ivB || !tagB || !ctB) {
-    throw new Error("crypto: malformed sealed secret");
+    throw new SecretUnrecoverableError("crypto: enveloppe scellée malformée");
   }
   const dek = await kek.unwrap(Buffer.from(wrappedB, "base64").toString("utf8"));
   const d = createDecipheriv("aes-256-gcm", dek, Buffer.from(ivB, "base64"));
   d.setAuthTag(Buffer.from(tagB, "base64"));
-  return Buffer.concat([
-    d.update(Buffer.from(ctB, "base64")),
-    d.final(),
-  ]).toString("utf8");
+  try {
+    return Buffer.concat([
+      d.update(Buffer.from(ctB, "base64")),
+      d.final(),
+    ]).toString("utf8");
+  } catch (err) {
+    // The KEK opened the DEK but the payload does not authenticate: the stored
+    // string was truncated or altered. Nothing to retry.
+    throw new SecretUnrecoverableError(
+      "crypto: le contenu scellé n'authentifie pas",
+      { cause: err },
+    );
+  }
+}
+
+/** True for a failure that no retry and no restart will fix. */
+export function isUnrecoverable(err: unknown): err is SecretUnrecoverableError {
+  return err instanceof SecretUnrecoverableError;
 }

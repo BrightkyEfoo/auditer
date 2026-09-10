@@ -1,6 +1,6 @@
 import type { PrismaClient } from "@auditer/db";
 import { withTenant } from "@auditer/db";
-import { type Kek, seal, open as openSecret } from "@auditer/crypto";
+import { type Kek, seal, open as openSecret, isUnrecoverable } from "@auditer/crypto";
 
 /**
  * GitLab OAuth token handling for cloning. Access tokens are ~2h and refresh
@@ -51,25 +51,52 @@ export async function validGitlabToken(
     tokenExpiresAt: Date | null;
   },
 ): Promise<string | undefined> {
-  const fresh = conn.tokenExpiresAt && conn.tokenExpiresAt.getTime() - 60_000 > Date.now();
-  if (fresh && conn.encPat) return openSecret(kek, conn.encPat);
-  if (!conn.encRefreshToken) return conn.encPat ? openSecret(kek, conn.encPat) : undefined;
+  try {
+    const fresh = conn.tokenExpiresAt && conn.tokenExpiresAt.getTime() - 60_000 > Date.now();
+    if (fresh && conn.encPat) return await openSecret(kek, conn.encPat);
+    if (!conn.encRefreshToken) {
+      return conn.encPat ? await openSecret(kek, conn.encPat) : undefined;
+    }
 
-  const refreshTok = await openSecret(kek, conn.encRefreshToken);
-  const t = await refresh(refreshTok);
-  const [encAccess, encRefresh] = await Promise.all([
-    seal(kek, t.accessToken),
-    seal(kek, t.refreshToken),
-  ]);
-  await withTenant(prisma, organizationId, (tx) =>
-    tx.connection.update({
-      where: { id: conn.id },
-      data: {
-        encPat: encAccess,
-        encRefreshToken: encRefresh,
-        tokenExpiresAt: new Date(t.expiresAt),
-      },
-    }),
-  );
-  return t.accessToken;
+    const refreshTok = await openSecret(kek, conn.encRefreshToken);
+    const t = await refresh(refreshTok);
+    const [encAccess, encRefresh] = await Promise.all([
+      seal(kek, t.accessToken),
+      seal(kek, t.refreshToken),
+    ]);
+    await withTenant(prisma, organizationId, (tx) =>
+      tx.connection.update({
+        where: { id: conn.id },
+        data: {
+          encPat: encAccess,
+          encRefreshToken: encRefresh,
+          tokenExpiresAt: new Date(t.expiresAt),
+        },
+      }),
+    );
+    return t.accessToken;
+  } catch (err) {
+    // Same rule as the api: a ciphertext the key can no longer open is dead, a
+    // vault that is merely down is not. Rethrowing the raw crypto error would
+    // put `transit decrypt failed: 400 {"errors":["cipher: message
+    // authentication failed"]}` in front of a customer as the reason their
+    // audit failed — true, and useless to them.
+    if (!isUnrecoverable(err)) throw err;
+    await withTenant(prisma, organizationId, (tx) =>
+      tx.connection.update({
+        where: { id: conn.id },
+        data: {
+          status: "reauth_required",
+          encPat: null,
+          encRefreshToken: null,
+          tokenExpiresAt: null,
+        },
+      }),
+    ).catch(() => {
+      /* marking is best-effort: the run must fail on the real reason below */
+    });
+    throw new Error(
+      "connexion GitLab à refaire : le secret enregistré n'est plus déchiffrable (clé de chiffrement perdue). Reconnectez le compte puis relancez l'audit.",
+    );
+  }
 }

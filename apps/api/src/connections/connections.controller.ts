@@ -10,6 +10,7 @@ import {
   HttpCode,
   UseGuards,
   NotFoundException,
+  ConflictException,
 } from "@nestjs/common";
 import type { Response } from "express";
 import { z } from "zod";
@@ -17,7 +18,7 @@ import { AuthGuard, Auth, type AuthContext } from "../auth/auth.guard.js";
 import { PrismaService } from "../infra/prisma.service.js";
 import { ZodBody } from "../common/zod.pipe.js";
 import { dropObjects } from "../common/artifact-purge.js";
-import { kekFromEnv, seal, open as openSecret } from "@auditer/crypto";
+import { kekFromEnv, seal, open as openSecret, isUnrecoverable } from "@auditer/crypto";
 import {
   installUrl,
   verifyState,
@@ -204,13 +205,51 @@ export class ConnectionsController {
     organizationId: string,
     conn: { id: string; encPat: string | null; encRefreshToken: string | null; tokenExpiresAt: Date | null },
   ): Promise<string> {
-    const notExpired = conn.tokenExpiresAt && conn.tokenExpiresAt.getTime() - 60_000 > Date.now();
-    if (notExpired && conn.encPat) return openSecret(kek, conn.encPat);
-    if (!conn.encRefreshToken) throw new NotFoundException("gitlab connection has no token");
-    const refresh = await openSecret(kek, conn.encRefreshToken);
-    const tokens = await gitlabRefresh(refresh);
-    await this.persistGitlabTokens(organizationId, conn.id, tokens);
-    return tokens.accessToken;
+    try {
+      const notExpired = conn.tokenExpiresAt && conn.tokenExpiresAt.getTime() - 60_000 > Date.now();
+      if (notExpired && conn.encPat) return await openSecret(kek, conn.encPat);
+      if (!conn.encRefreshToken) throw new NotFoundException("gitlab connection has no token");
+      const refresh = await openSecret(kek, conn.encRefreshToken);
+      const tokens = await gitlabRefresh(refresh);
+      await this.persistGitlabTokens(organizationId, conn.id, tokens);
+      return tokens.accessToken;
+    } catch (err) {
+      // A secret the key can no longer open is DEAD. Re-reading it will fail
+      // identically forever — which is exactly what happened here: one
+      // `ExceptionsHandler` stack trace per page load, for days, while the user
+      // saw a broken screen and nothing told either of them what to do.
+      //
+      // A vault that is merely unreachable takes the other path and is rethrown
+      // untouched: an outage must never destroy a working secret.
+      if (!isUnrecoverable(err)) throw err;
+      await this.markReauthRequired(organizationId, conn.id);
+      throw new ConflictException(
+        "La connexion GitLab doit être refaite : le secret enregistré n'est plus déchiffrable. Reconnectez le compte.",
+      );
+    }
+  }
+
+  /**
+   * Mark a connection dead and drop its unreadable ciphertexts.
+   *
+   * Clearing them is deliberate. They cannot be decrypted by anything, so
+   * keeping them buys nothing and costs a retry on every request; and a stored
+   * blob that no key opens is not a secret, it is noise that looks like one.
+   * The row itself stays so the user sees WHICH connection to redo instead of
+   * finding it silently gone.
+   */
+  private async markReauthRequired(organizationId: string, connectionId: string): Promise<void> {
+    await this.prisma.tenant(organizationId, (tx) =>
+      tx.connection.update({
+        where: { id: connectionId },
+        data: {
+          status: "reauth_required",
+          encPat: null,
+          encRefreshToken: null,
+          tokenExpiresAt: null,
+        },
+      }),
+    );
   }
 
   /** Import a chosen repo so it can be audited. */
